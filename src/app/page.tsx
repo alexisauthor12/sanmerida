@@ -142,13 +142,16 @@ export default function Home() {
         "San Mérida tiene una atención muy profesional. Cumplen lo que prometen y mantienen comunicación en cada etapa del proceso.",
     },
   ];
+  // MP4 optimizados (<24 MiB) generados con scripts/compress-catalog-videos.mjs.
+  // Los .MOV originales pesan hasta 133 MiB (limite de 25 MiB por asset de
+  // Cloudflare) y ademas no se reproducen en todos los navegadores.
   const videosCatalogo = [
     { titulo: "Video 01", src: "/mp4video.mp4" },
-    { titulo: "Video 02", src: "/videocarru2nuevo.MOV" },
-    { titulo: "Video 03", src: "/videocarru3.MOV" },
-    { titulo: "Video 04", src: "/videocarru4nuevo.MOV" },
-    { titulo: "Video 05", src: "/videocarru5.MOV" },
-    { titulo: "Video 06", src: "/videocarru6nuevo.MOV" },
+    { titulo: "Video 02", src: "/videocarru2nuevo.mp4" },
+    { titulo: "Video 03", src: "/videocarru3.mp4" },
+    { titulo: "Video 04", src: "/videocarru4nuevo.mp4" },
+    { titulo: "Video 05", src: "/videocarru5.mp4" },
+    { titulo: "Video 06", src: "/videocarru6nuevo.mp4" },
   ];
   const videosCatalogoBase = videosCatalogo;
   const metodosPago = [

@@ -157,16 +157,26 @@ Reglas de operacion:
 
 ### 1.7) Videos del sitio y limite de assets de Cloudflare
 
-Cloudflare Workers acepta **maximo 25 MiB por archivo** de assets. Los videos del
-sitio superan ese tamano (hasta 133 MiB), asi que:
+Cloudflare Workers acepta **maximo 25 MiB por archivo** de assets.
 
-- `scripts/exclude-large-assets.mjs` (parte de `npm run build:cf`) escribe
-  `.open-next/assets/.assetsignore` con todo archivo mayor a 25 MiB, para que el
-  despliegue no falle con `Asset too large`.
-- Los videos siguen en el repositorio y en `storage-videos/` (copia local
-  ignorada por Git): no se pierden, simplemente no se suben.
-- Solo se sirven los videos menores a 25 MiB (`sistemasan.mp4`, `MTT.mp4`,
-  `mp4video.mp4`, `IMG_2409.mp4`, `videocarru6nuevo.MOV`).
+**Los videos del carrusel se sirven comprimidos en MP4.** Los originales son
+`.MOV` de 72 a 133 MiB: no se pueden subir como assets y ademas no se reproducen
+en todos los navegadores (Chrome/Android). Por eso:
+
+- `scripts/compress-catalog-videos.mjs` genera los `.mp4` que usa el sitio
+  (H.264 + AAC, alto maximo 1280 px, `-crf 30` con reintentos mas agresivos hasta
+  bajar de 24 MiB). Si el `.mp4` ya existia, lo guarda antes en
+  `storage-videos/descarte/`.
+- `src/app/page.tsx` (`videosCatalogo`) apunta siempre a esos `.mp4`.
+- `tests/catalog-videos.test.mjs` verifica que cada video del catalogo exista,
+  sea `.mp4` y pese menos de 25 MiB: si alguien vuelve a poner un archivo grande,
+  la prueba falla antes del despliegue.
+- Los `.MOV` originales se conservan en `public/` (el despliegue los omite con
+  `.assetsignore`) y en `storage-videos/`: no se pierden.
+
+`scripts/exclude-large-assets.mjs` (parte de `npm run build:cf`) sigue escribiendo
+`.open-next/assets/.assetsignore` con todo archivo mayor a 25 MiB, para que el
+despliegue no falle con `Asset too large`.
 
 > Nota de rendimiento: tener los videos pesados en `public/` hace que cada build
 > copie ~750 MB. Si se necesita un build rapido, moverlos a `storage-videos/`

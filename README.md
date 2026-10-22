@@ -42,6 +42,19 @@ Run minimal hardening tests:
 npm run test
 ```
 
+## Videos del catálogo
+
+Los videos del carrusel se sirven comprimidos en MP4 (< 24 MiB) porque Cloudflare
+rechaza assets de más de 25 MiB y los `.MOV` no se reproducen en todos los
+navegadores:
+
+```bash
+node scripts/compress-catalog-videos.mjs
+```
+
+Los `.MOV` originales se conservan en `public/` y en `storage-videos/`. Detalle en
+`docs/OPERACIONES_PRODUCCION.md` (seccion 1.7).
+
 ## Operational runbook
 
 Production setup and operations checklist:
