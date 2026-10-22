@@ -30,6 +30,16 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# expedientes de miembros (documentos personales): viven en el almacenamiento
+# (Supabase Storage) y se sirven por /api/member-files/file con sesion.
+/public/uploads/
+
+# respaldos locales de documentos (nunca a Git)
+/backups/
+
+# secretos locales de Cloudflare (wrangler dev / preview)
+.dev.vars
+
 # env files (can opt-in for committing if needed)
 .env*
 
@@ -40,3 +50,14 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .open-next
+
+# estado local de wrangler / opennext
+/.wrangler/
+
+# copia local de videos pesados (no se despliegan: superan el limite de 25 MiB
+# por asset de Cloudflare; se excluyen con scripts/exclude-large-assets.mjs)
+/storage-videos/
+
+# artefactos temporales de diagnostico (logs, scripts sueltos)
+/tmp-*
+

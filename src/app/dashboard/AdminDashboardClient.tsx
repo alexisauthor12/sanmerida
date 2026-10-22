@@ -2,8 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import RealTimeGestionCommandCenter from "./RealTimeGestionCommandCenter";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import SavedLocationPreview, { MissingLocationPreview } from "@/app/components/SavedLocationPreview";
+import { computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
 import {
   Activity,
   Bell,
@@ -13,19 +14,18 @@ import {
   LayoutDashboard,
   X,
   FileCheck2,
-  Gauge,
   Landmark,
-  LineChart as LineChartIcon,
   LogOut,
-  Route,
   Search,
   ChevronLeft,
   ChevronRight,
   ShieldCheck,
   ShieldAlert,
-  Truck,
   Users,
-  Wrench,
+  Wallet,
+  CalendarClock,
+  Phone,
+  TriangleAlert,
 } from "lucide-react";
 import {
   Bar,
@@ -136,6 +136,12 @@ type CuotaMonitorProfile = {
   nombre?: string;
   apellido?: string;
   username?: string;
+  credenciales?: {
+    usuario: string;
+    clave: string;
+    disponible: boolean;
+    emitidaEn: string;
+  };
   fotoPersona: string;
   fotoCedula: string;
   fotoRif: string;
@@ -143,6 +149,14 @@ type CuotaMonitorProfile = {
   ocupacion: string;
   empresa: string;
   references?: string;
+  ubicacionLink?: string;
+  referenciaLink?: string;
+  ubicacionLat?: number | null;
+  ubicacionLng?: number | null;
+  referenciaLat?: number | null;
+  referenciaLng?: number | null;
+  referencia2Lat?: number | null;
+  referencia2Lng?: number | null;
   fechaIngreso: string;
   motoMarca: string;
   motoModelo: string;
@@ -154,6 +168,19 @@ type CuotaMonitorProfile = {
   totalAbonado?: number;
   contratos: CuotaMonitorContract[];
   documentos: CuotaMonitorDocument[];
+};
+
+// Configuracion editable del financiamiento por modelo de moto.
+type FinancingModelRow = {
+  slug: string;
+  nombre: string;
+  categoria: string;
+  guardado: boolean;
+  precioBase: number;
+  porcentajeInicial: number;
+  cuotasQuincenales: number;
+  montoCuota: number;
+  activo: boolean;
 };
 
 type MonitorPaymentRecordApi = {
@@ -1109,6 +1136,9 @@ function normalizeCedula(value: string) {
   return value.replace(/\D/g, "");
 }
 
+// Formato de las claves de miembro: SAN-MEMBER-XXXXXX (6 caracteres A-Z/0-9).
+const MEMBER_KEY_INPUT_PATTERN = /^SAN-MEMBER-[A-Z0-9]{6}$/;
+
 function isCiclon83Plan(profile?: { cuotasTotales?: number; plan?: string } | null) {
   if (!profile) return false;
   if (Number(profile.cuotasTotales ?? 0) >= GROUP_CAPACITY_83) return true;
@@ -1150,6 +1180,368 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#039;");
 }
 
+function daysOverdue(dmy: string) {
+  const due = parseDateDMY(dmy);
+  if (Number.isNaN(due.getTime())) return 0;
+
+  return Math.floor((Date.now() - due.getTime()) / 86400000);
+}
+
+function ClientAvatar({
+  name,
+  photo,
+  tone,
+}: {
+  name: string;
+  photo?: string;
+  tone: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const initials =
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("") || "—";
+  const showPhoto = Boolean(photo) && !failed;
+
+  return (
+    <span
+      className={`relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-sm font-semibold text-white ${tone}`}
+    >
+      {showPhoto ? (
+        <Image
+          src={photo as string}
+          alt={name}
+          width={48}
+          height={48}
+          unoptimized
+          onError={() => setFailed(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        initials
+      )}
+    </span>
+  );
+}
+
+type MonitorFocusGroup = "atraso" | "aldia" | "todos";
+
+function MonitorFocusPanel({
+  group,
+  clients,
+  profiles,
+  installments,
+  search,
+  onSearchChange,
+  onClose,
+  onOpenClient,
+}: {
+  group: MonitorFocusGroup;
+  clients: CuotaMonitorClient[];
+  profiles: Record<string, CuotaMonitorProfile>;
+  installments: CuotaMonitorInstallment[];
+  search: string;
+  onSearchChange: (value: string) => void;
+  onClose: () => void;
+  onOpenClient: (clientId: string, target: "cuotas" | "expediente") => void;
+}) {
+  const totalVencidas = clients.reduce((acc, client) => acc + client.cuotasVencidas, 0);
+  const saldoTotal = clients.reduce((acc, client) => acc + client.saldo, 0);
+  const isAtraso = group === "atraso";
+  const isAlDia = group === "aldia";
+  const panelTitle = isAtraso ? "Clientes con retraso" : isAlDia ? "Clientes al día" : "Todos los clientes";
+
+  function clientCedula(client: CuotaMonitorClient) {
+    return profiles[client.id]?.cedula?.trim() || client.documento;
+  }
+
+  function handleExportCsv() {
+    const header = ["Nombre", "Cedula", "Estado", "CuotasVencidas", "CuotasPendientes", "SaldoUSD", "ProximoVencimiento", "Telefono", "Grupo", "Gestor"];
+    const rows = clients.map((client) => [
+      client.nombre,
+      clientCedula(client),
+      client.estado,
+      String(client.cuotasVencidas),
+      String(client.cuotasPendientes),
+      String(client.saldo),
+      client.proximoVencimiento,
+      client.telefono,
+      client.agencia,
+      client.gestor,
+    ]);
+    const csv = [header, ...rows]
+      .map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `monitor-${group}-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handlePrint() {
+    const rowsHtml = clients
+      .map((client) => {
+        const vencidas = installments
+          .filter((item) => item.clientId === client.id && item.estado === "Vencida")
+          .sort((first, second) => first.numero - second.numero)
+          .map((item) => {
+            const days = daysOverdue(item.vence);
+            const style =
+              days > 30
+                ? "background:#dc2626;color:#fff;"
+                : "background:#fee2e2;color:#b91c1c;";
+            return `<span style="display:inline-block;margin:2px;padding:2px 6px;border-radius:999px;font-size:11px;${style}">#${item.numero} · ${item.vence}${days > 30 ? ` · ${days}d` : ""}</span>`;
+          })
+          .join("");
+
+        return `<tr>
+          <td>${escapeHtml(client.nombre)}</td>
+          <td>${escapeHtml(clientCedula(client))}</td>
+          <td>${escapeHtml(client.estado)}</td>
+          <td style="text-align:center">${client.cuotasVencidas}</td>
+          <td style="text-align:center">${client.cuotasPendientes}</td>
+          <td style="text-align:right">${formatMoneyUSD(client.saldo)}</td>
+          <td>${escapeHtml(client.proximoVencimiento)}</td>
+          <td>${vencidas || "—"}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(panelTitle)}</title>
+      <style>
+        body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#18181b}
+        h1{font-size:18px;margin:0 0 4px}
+        p.sub{margin:0 0 16px;color:#52525b;font-size:12px}
+        table{width:100%;border-collapse:collapse;font-size:12px}
+        th,td{border:1px solid #d4d4d8;padding:6px 8px;vertical-align:top}
+        th{background:#f4f4f5;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+      </style></head><body>
+      <h1>${escapeHtml(panelTitle)}</h1>
+      <p class="sub">${clients.length} clientes · ${totalVencidas} cuotas vencidas · ${formatMoneyUSD(saldoTotal)} en cartera · Generado: ${new Date().toLocaleString("es-VE")}</p>
+      <table><thead><tr><th>Cliente</th><th>Cédula</th><th>Estado</th><th>Vencidas</th><th>Pendientes</th><th>Saldo</th><th>Próx. venc.</th><th>Cuotas vencidas</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      </body></html>`;
+
+    const win = window.open("", "_blank", "width=1024,height=768");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.print();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col bg-zinc-950/80 p-2 backdrop-blur-sm sm:p-6">
+      <div className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-zinc-200 bg-white shadow-2xl">
+        <header
+          className={`flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 p-4 sm:p-5 ${
+            isAtraso
+              ? "bg-gradient-to-r from-rose-50 to-white"
+              : isAlDia
+                ? "bg-gradient-to-r from-emerald-50 to-white"
+                : "bg-gradient-to-r from-sky-50 to-white"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className={`flex h-11 w-11 items-center justify-center rounded-2xl text-white ${
+                isAtraso ? "bg-rose-600" : isAlDia ? "bg-emerald-600" : "bg-sky-600"
+              }`}
+            >
+              {isAtraso ? (
+                <TriangleAlert className="h-5 w-5" />
+              ) : isAlDia ? (
+                <ShieldCheck className="h-5 w-5" />
+              ) : (
+                <Users className="h-5 w-5" />
+              )}
+            </span>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                {isAtraso ? "Con atraso · Atención" : isAlDia ? "Al día · Solvente" : "Cartera completa"}
+              </p>
+              <h3 className="mt-1 text-xl font-semibold tracking-tight text-zinc-900 sm:text-2xl">
+                {isAtraso ? "Clientes con retraso" : isAlDia ? "Clientes al día" : "Todos los clientes"}
+              </h3>
+              <p className="mt-1 text-sm text-zinc-600">
+                {clients.length} clientes · {totalVencidas} cuotas vencidas · {formatMoneyUSD(saldoTotal)} en cartera
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+            >
+              Exportar CSV
+            </button>
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
+            >
+              Imprimir / PDF
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Cerrar panel"
+              className="rounded-xl border border-zinc-300 bg-white p-2 text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </header>
+
+        <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 sm:px-5">
+          <label className="flex flex-1 items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-600">
+            <Search className="h-4 w-4 text-zinc-400" />
+            <input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="Buscar por nombre, cédula, grupo o gestor"
+              className="w-full bg-transparent outline-none"
+            />
+          </label>
+          <span className="text-xs font-medium text-zinc-500">Ordenado por cuotas vencidas</span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 sm:p-5">
+          {clients.length === 0 ? (
+            <div className="flex h-full min-h-[200px] items-center justify-center text-sm text-zinc-500">
+              No hay clientes en este grupo.
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {clients.map((client) => {
+                const profile = profiles[client.id];
+                const vencidas = installments
+                  .filter((item) => item.clientId === client.id && item.estado === "Vencida")
+                  .sort((first, second) => first.numero - second.numero);
+                const cedula = profile?.cedula?.trim() || client.documento;
+                const enRiesgo = client.estado === "Riesgo";
+                const badgeTone = enRiesgo
+                  ? "bg-rose-100 text-rose-700"
+                  : client.estado === "Con atraso"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-emerald-100 text-emerald-700";
+                const avatarTone = enRiesgo
+                  ? "bg-rose-600"
+                  : client.estado === "Con atraso"
+                    ? "bg-amber-500"
+                    : "bg-emerald-600";
+
+                return (
+                  <article
+                    key={`monitor-focus-${client.id}`}
+                    className="flex flex-col rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow-md"
+                  >
+                    <div className="flex items-start gap-3">
+                      <ClientAvatar name={client.nombre} photo={profile?.fotoPersona} tone={avatarTone} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-zinc-900">{client.nombre}</p>
+                        <p className="mt-0.5 text-xs text-zinc-500">C.I. {cedula}</p>
+                        <p className="mt-1 text-[11px] text-zinc-400">
+                          {client.agencia} · Gestor: {client.gestor}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${badgeTone}`}>
+                        {client.estado}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-xl bg-rose-50 px-2 py-2">
+                        <p className="text-lg font-semibold text-rose-700">{client.cuotasVencidas}</p>
+                        <p className="text-[10px] uppercase tracking-wide text-rose-600/80">Vencidas</p>
+                      </div>
+                      <div className="rounded-xl bg-amber-50 px-2 py-2">
+                        <p className="text-lg font-semibold text-amber-700">{client.cuotasPendientes}</p>
+                        <p className="text-[10px] uppercase tracking-wide text-amber-600/80">Pendientes</p>
+                      </div>
+                      <div className="rounded-xl bg-zinc-50 px-2 py-2">
+                        <p className="text-lg font-semibold text-zinc-900">{formatMoneyUSD(client.saldo)}</p>
+                        <p className="text-[10px] uppercase tracking-wide text-zinc-500">Saldo</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-1.5 text-xs text-zinc-600">
+                      <p className="flex items-center gap-2">
+                        <CalendarClock className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                        Próx. vencimiento:{" "}
+                        <span className="font-medium text-zinc-900">{client.proximoVencimiento}</span>
+                      </p>
+                      <p className="flex items-center gap-2">
+                        <Phone className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                        {client.telefono || "—"}
+                      </p>
+                      {vencidas.length > 0 ? (
+                        <div className="flex items-start gap-2">
+                          <Wallet className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                          <div>
+                            <span>Cuotas vencidas:</span>
+                            <span className="mt-1 flex flex-wrap gap-1">
+                              {vencidas.map((item) => {
+                                const days = daysOverdue(item.vence);
+                                const critical = days > 30;
+
+                                return (
+                                  <span
+                                    key={`venc-${client.id}-${item.id}`}
+                                    title={critical ? `${days} días de atraso` : undefined}
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                      critical ? "bg-red-600 text-white" : "bg-rose-100 text-rose-700"
+                                    }`}
+                                  >
+                                    #{item.numero} · {item.vence}
+                                    {critical ? ` · ${days}d` : ""}
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="flex items-center gap-2 text-emerald-600">
+                          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                          Sin cuotas vencidas
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onOpenClient(client.id, "cuotas")}
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-xl bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
+                      >
+                        Ver cuotas <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onOpenClient(client.id, "expediente")}
+                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                      >
+                        Expediente
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminDashboardClient({ user }: { user: AdminUser }) {
   const [clock, setClock] = useState<Date | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
@@ -1170,11 +1562,26 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
   const [monitorCedulaSearch, setMonitorCedulaSearch] = useState("");
   const [monitorPortfolioSearch, setMonitorPortfolioSearch] = useState("");
   const [monitorSearchError, setMonitorSearchError] = useState("");
+  // Aviso cuando los expedientes no se pudieron cargar (para no confundir con
+  // "no hay expedientes": los datos NUNCA se eliminan solos).
+  const [monitorLoadError, setMonitorLoadError] = useState("");
   const [monitorSearchLoading, setMonitorSearchLoading] = useState(false);
   const [monitorTab, setMonitorTab] = useState<"operaciones" | "expediente">("operaciones");
   const [monitorClientsData, setMonitorClientsData] = useState<CuotaMonitorClient[]>([]);
   const [monitorProfilesData, setMonitorProfilesData] = useState<Record<string, CuotaMonitorProfile>>({});
   const [monitorInstallmentsData, setMonitorInstallmentsData] = useState<CuotaMonitorInstallment[]>([]);
+  const [monitorFocusGroup, setMonitorFocusGroup] = useState<"atraso" | "aldia" | "todos" | null>(null);
+  const [monitorFocusSearch, setMonitorFocusSearch] = useState("");
+  const [credentialsBusyCedula, setCredentialsBusyCedula] = useState("");
+  const [credentialsNotice, setCredentialsNotice] = useState("");
+  const [credentialsError, setCredentialsError] = useState("");
+  const [credentialsDraft, setCredentialsDraft] = useState("");
+  // Financiamiento por modelo de moto (50% inicial + cuotas quincenales).
+  const [financingModels, setFinancingModels] = useState<FinancingModelRow[]>([]);
+  const [financingBusy, setFinancingBusy] = useState(false);
+  const [financingLoading, setFinancingLoading] = useState(false);
+  const [financingNotice, setFinancingNotice] = useState("");
+  const [financingError, setFinancingError] = useState("");
   const [selectedContractId, setSelectedContractId] = useState(contracts[0].id);
   const [selectedContractCedula, setSelectedContractCedula] = useState(contracts[0].representativeCedula);
   const [contractCedulaSearch, setContractCedulaSearch] = useState("");
@@ -1359,6 +1766,41 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     };
   }, [monitorClientsSource]);
 
+  // --- Panel a pantalla completa por grupo (Con atraso / Al día / Todos) ---
+  const monitorFocusClients = useMemo(() => {
+    if (!monitorFocusGroup) return [] as CuotaMonitorClient[];
+
+    const rows = monitorClientsSource.filter((client) =>
+      monitorFocusGroup === "atraso"
+        ? client.estado !== "Al día"
+        : monitorFocusGroup === "aldia"
+          ? client.estado === "Al día"
+          : true
+    );
+
+    const rawTerm = monitorFocusSearch.trim().toLowerCase();
+    const digitsTerm = normalizeCedula(monitorFocusSearch);
+
+    const filtered = rawTerm
+      ? rows.filter((client) => {
+          const profile = monitorProfilesSource[client.id];
+          const haystack = `${client.nombre} ${client.documento} ${profile?.cedula ?? ""} ${client.agencia} ${client.gestor}`.toLowerCase();
+
+          return (
+            haystack.includes(rawTerm) ||
+            (digitsTerm.length > 0 && normalizeCedula(client.documento).includes(digitsTerm))
+          );
+        })
+      : rows;
+
+    return [...filtered].sort(
+      (first, second) =>
+        second.cuotasVencidas - first.cuotasVencidas || second.saldo - first.saldo
+    );
+  }, [monitorFocusGroup, monitorFocusSearch, monitorClientsSource, monitorProfilesSource]);
+
+  // Nota: el cálculo de vencidas/saldo por cliente se realiza dentro de MonitorFocusPanel.
+
   const selectedRecargoTotal = selectedInstallmentRows.reduce((acc, item) => acc + item.recargo, 0);
   const selectedMontoBase = selectedInstallmentRows.reduce((acc, item) => acc + item.monto, 0);
   const totalCobro = chargeOnlyAdvance ? advanceAmount : selectedMontoBase + selectedRecargoTotal;
@@ -1378,6 +1820,10 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     () => selectedMonitorProfile.documentos.filter((doc) => !/factura/i.test(doc.nombre)),
     [selectedMonitorProfile.documentos]
   );
+  // Días entre cuotas: plan de 83 cuotas = SEMANAL (7); plan de 26 cuotas = QUINCENAL (15).
+  const intervaloDiasPlan =
+    isCiclon83Plan(selectedMonitorProfile) || cuotasTotalesPlan >= 83 ? 7 : 15;
+
   const cronogramaCompletoCuotas = useMemo(() => {
     const now = new Date();
     const startDate = parseDateDMY(selectedMonitorProfile.fechaIngreso);
@@ -1390,7 +1836,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
 
       const dueDate = cuotaData
         ? parseDateDMY(cuotaData.vence)
-        : new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + index * 15);
+        : new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + index * intervaloDiasPlan);
       const dueTs = dueDate.getTime();
       const nowTs = now.getTime();
 
@@ -1466,14 +1912,16 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
   }, [paymentModalCuotaData, paymentModalAbonado]);
   const pagoAcumulado = cronogramaCompletoCuotas.filter((item) => item.estado === "Pagada").reduce((acc, item) => acc + item.total, 0);
   const totalAbonadoAplicado = Number((selectedMonitorProfile.totalAbonado ?? currentAdvancePayments.reduce((acc, item) => acc + item.amount, 0)).toFixed(2));
-  const deudaProyecto = Math.max(0, cronogramaCompletoCuotas.filter((item) => item.estado !== "Pagada").reduce((acc, item) => acc + item.total, 0) - totalAbonadoAplicado);
+  // El "saldo que debe" usa el MISMO cálculo del monitor (evita discrepancias entre vistas).
+  const deudaProyecto = Math.max(0, Number(selectedMonitorClient.saldo ?? 0));
   const clienteSolvente = cuotasRestantes === 0 || (selectedMonitorClient.estado === "Al día" && cuotasVencidasCronograma === 0);
   const ultimoPagoManual = [...manualPaymentRecords].sort((first, second) => second.fecha.localeCompare(first.fecha))[0];
+  const ultimaCuotaPagada = [...cronogramaCompletoCuotas]
+    .filter((item) => item.estado === "Pagada")
+    .sort((first, second) => second.numero - first.numero)[0];
   const fechaUltimoPago = ultimoPagoManual?.fecha
     ? formatIsoDateToDMY(ultimoPagoManual.fecha)
-    : cuotasPagadasCronograma > 0
-      ? addMonthsToDateLabel(selectedMonitorProfile.fechaIngreso, Math.max(cuotasPagadasCronograma - 1, 0))
-      : "Sin registro";
+    : ultimaCuotaPagada?.vence ?? "Sin registro";
   const metodoUltimoPago = ultimoPagoManual?.metodo ?? (cuotasPagadasCronograma > 0 ? "Transferencia" : "No registrado");
   const cuotaActualSugerida = useMemo(() => {
     const primeraPendiente = cronogramaCompletoCuotas.find((item) => item.estado !== "Pagada");
@@ -1749,39 +2197,66 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     setPendingDeleteStep(1);
   }
 
-  useEffect(() => {
-    let cancelled = false;
+  // Carga los expedientes del monitor. Se puede reintentar desde el aviso.
+  const loadMonitorClients = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/monitor-cuotas`);
+      const data = (await response.json()) as {
+        ok: boolean;
+        clients?: CuotaMonitorClient[];
+        profiles?: Record<string, CuotaMonitorProfile>;
+        installments?: CuotaMonitorInstallment[];
+        message?: string;
+      };
 
-    const loadMonitorClients = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/api/monitor-cuotas`);
-        const data = (await response.json()) as {
-          ok: boolean;
-          clients?: CuotaMonitorClient[];
-          profiles?: Record<string, CuotaMonitorProfile>;
-          installments?: CuotaMonitorInstallment[];
-        };
-
-        if (!response.ok || !data.ok) return;
-
-        const clients = data.clients ?? [];
-        if (!cancelled && clients.length > 0) {
-          setMonitorClientsData(clients);
-          setMonitorProfilesData(data.profiles ?? {});
-          setMonitorInstallmentsData(data.installments ?? []);
-          setSelectedMonitorClientId((current) => clients.some((item) => item.id === current) ? current : clients[0].id);
-        }
-      } catch {
-        // Fallback to local data if API is temporarily unavailable.
+      if (!response.ok || !data.ok) {
+        setMonitorLoadError(
+          response.status === 401 || response.status === 403
+            ? "Tu sesión o la licencia administrativa venció, por eso la lista se ve vacía. Vuelve a validar la licencia y reintenta."
+            : data.message || "No se pudieron cargar los expedientes en este momento.",
+        );
+        return;
       }
-    };
 
-    void loadMonitorClients();
+      const clients = data.clients ?? [];
+      setMonitorLoadError("");
 
-    return () => {
-      cancelled = true;
-    };
+      if (clients.length > 0) {
+        setMonitorClientsData(clients);
+        setMonitorProfilesData(data.profiles ?? {});
+        setMonitorInstallmentsData(data.installments ?? []);
+        setSelectedMonitorClientId((current) => (clients.some((item) => item.id === current) ? current : clients[0].id));
+      }
+    } catch {
+      setMonitorLoadError("No se pudo conectar con el servidor. Reintenta en unos segundos.");
+    }
   }, []);
+
+  useEffect(() => {
+    void loadMonitorClients();
+  }, [loadMonitorClients]);
+
+  // Al abrir la pestaña de expediente traemos las credenciales reales del miembro
+  // seleccionado (la lista no las incluye).
+  useEffect(() => {
+    if (monitorTab !== "expediente" || !selectedMonitorClientId) return;
+
+    const client = monitorClientsSource.find((item) => item.id === selectedMonitorClientId);
+    const cedula = normalizeCedula(client?.documento ?? "");
+
+    if (!cedula) return;
+
+    void loadStoredCredentials(cedula, selectedMonitorClientId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitorTab, selectedMonitorClientId, monitorClientsSource]);
+
+  // Carga la configuracion de financiamiento al abrir la seccion.
+  useEffect(() => {
+    if (activeSection !== "financiamiento") return;
+
+    void loadFinancingModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection]);
 
   useEffect(() => {
     if (activeSection !== "contratos" || contractTab !== "expediente") return;
@@ -1884,6 +2359,242 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     } finally {
       setMonitorSearchLoading(false);
     }
+  }
+
+  // El listado de expedientes NO incluye las claves (para no descifrar todas de
+  // golpe). Al abrir un expediente pedimos el detalle por cédula, que sí trae las
+  // credenciales guardadas.
+  async function loadStoredCredentials(cedula: string, clientId: string) {
+    if (!cedula) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/monitor-cuotas?cedula=${encodeURIComponent(cedula)}`);
+      const data = (await response.json()) as {
+        ok: boolean;
+        found?: boolean;
+        profile?: CuotaMonitorProfile;
+      };
+
+      if (!response.ok || !data.ok || !data.found || !data.profile?.credenciales) {
+        return;
+      }
+
+      const credentials = data.profile.credenciales;
+      const username = data.profile.username;
+
+      setMonitorProfilesData((current) => {
+        const profile = current[clientId];
+
+        if (!profile) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [clientId]: {
+            ...profile,
+            username: username || profile.username,
+            credenciales: credentials,
+          },
+        };
+      });
+    } catch {
+      // Si falla, el expediente se queda como está y el admin puede usar la tarjeta.
+    }
+  }
+
+  // Genera o guarda la clave del miembro en el expediente. Si se pasa una clave
+  // ya existente, se guarda tal cual (no cambia el acceso del miembro); si no,
+  // se genera una nueva.
+  async function handleGenerateCredentials(cedula: string, clientId: string, providedKey = "") {
+    if (!cedula) {
+      setCredentialsError("No hay una cédula válida en el expediente seleccionado.");
+      return;
+    }
+
+    const requestedKey = providedKey.trim().toUpperCase();
+
+    if (requestedKey && !MEMBER_KEY_INPUT_PATTERN.test(requestedKey)) {
+      setCredentialsError("La clave debe tener el formato SAN-MEMBER-XXXXXX (6 caracteres).");
+      return;
+    }
+
+    setCredentialsBusyCedula(cedula);
+    setCredentialsError("");
+    setCredentialsNotice("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/monitor-cuotas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cedula, kind: "credentials", memberKey: requestedKey || undefined }),
+      });
+      const data = (await response.json()) as {
+        ok: boolean;
+        message?: string;
+        credentials?: { username: string; memberKey: string };
+      };
+
+      if (!response.ok || !data.ok || !data.credentials) {
+        setCredentialsError(data.message || "No fue posible generar las credenciales.");
+        return;
+      }
+
+      const generatedUsername = data.credentials.username;
+      const generatedKey = data.credentials.memberKey;
+
+      setMonitorProfilesData((current) => {
+        const profile = current[clientId];
+
+        if (!profile) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [clientId]: {
+            ...profile,
+            username: profile.username || generatedUsername,
+            credenciales: {
+              usuario: generatedUsername || profile.username || "No registrado",
+              clave: generatedKey,
+              disponible: true,
+              emitidaEn: new Date().toLocaleDateString("es-VE"),
+            },
+          },
+        };
+      });
+
+      setCredentialsNotice(data.message || "Credenciales generadas y guardadas en el expediente.");
+      setCredentialsDraft("");
+    } catch {
+      setCredentialsError("No se pudo conectar con el servidor para guardar las credenciales.");
+    } finally {
+      setCredentialsBusyCedula("");
+    }
+  }
+
+  // Financiamiento por modelo: carga y guardado.
+  async function loadFinancingModels() {
+    setFinancingLoading(true);
+    setFinancingError("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/financing-motos`);
+      const data = (await response.json()) as {
+        ok: boolean;
+        models?: FinancingModelRow[];
+        message?: string;
+      };
+
+      if (!response.ok || !data.ok || !data.models) {
+        setFinancingError(data.message || "No fue posible cargar el financiamiento.");
+        return;
+      }
+
+      setFinancingModels(data.models);
+    } catch {
+      setFinancingError("No se pudo conectar con el servidor.");
+    } finally {
+      setFinancingLoading(false);
+    }
+  }
+
+  async function saveFinancingModels() {
+    setFinancingBusy(true);
+    setFinancingNotice("");
+    setFinancingError("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/financing-motos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          motos: financingModels.map((model) => ({
+            motoSlug: model.slug,
+            precioBase: model.precioBase,
+            porcentajeInicial: model.porcentajeInicial,
+            cuotasQuincenales: model.cuotasQuincenales,
+            montoCuota: model.montoCuota,
+            activo: model.activo,
+          })),
+        }),
+      });
+      const data = (await response.json()) as { ok: boolean; message?: string };
+
+      if (!response.ok || !data.ok) {
+        setFinancingError(data.message || "No fue posible guardar el financiamiento.");
+        return;
+      }
+
+      setFinancingNotice(data.message || "Financiamiento guardado correctamente.");
+      await loadFinancingModels();
+    } catch {
+      setFinancingError("No se pudo conectar con el servidor.");
+    } finally {
+      setFinancingBusy(false);
+    }
+  }
+
+  function updateFinancingRow(slug: string, patch: Partial<FinancingModelRow>) {
+    setFinancingModels((current) =>
+      current.map((model) => (model.slug === slug ? { ...model, ...patch } : model)),
+    );
+  }
+
+  const financingSummary = useMemo(() => {
+    const withPrice = financingModels.filter((model) => model.precioBase > 0);
+    const totalInicial = withPrice.reduce((acc, model) => {
+      const detail = computeFinancing(model);
+      return acc + detail.inicial;
+    }, 0);
+    const totalCuotas = withPrice.reduce((acc, model) => {
+      const detail = computeFinancing(model);
+      return acc + detail.totalCuotas;
+    }, 0);
+
+    return {
+      configurados: withPrice.length,
+      total: financingModels.length,
+      totalInicial: Math.round(totalInicial * 100) / 100,
+      totalCuotas: Math.round(totalCuotas * 100) / 100,
+    };
+  }, [financingModels]);
+
+  // Miembros en el sistema de financiamiento: es INDIVIDUAL, no pertenecen a
+  // ningun grupo operativo. Se calculan desde los datos ya cargados del monitor.
+  const financingMembers = useMemo(() => {
+    return monitorClientsSource
+      .map((client) => {
+        const profile = monitorProfilesSource[client.id];
+        const installments = monitorInstallmentsSource.filter((item) => item.clientId === client.id);
+
+        return {
+          client,
+          profile,
+          cuotasTotales: installments.length,
+          cuotasPagadas: installments.filter((item) => item.estado === "Pagada").length,
+          esFinanciamiento: isFinancingPlan(profile?.plan ?? ""),
+        };
+      })
+      .filter((item) => item.esFinanciamiento);
+  }, [monitorClientsSource, monitorInstallmentsSource, monitorProfilesSource]);
+
+  const financingMembersSummary = useMemo(() => {
+    return {
+      total: financingMembers.length,
+      saldo: Math.round(financingMembers.reduce((acc, item) => acc + (item.client.saldo ?? 0), 0) * 100) / 100,
+      cuotasPendientes: financingMembers.reduce((acc, item) => acc + (item.client.cuotasPendientes ?? 0), 0),
+      conAtraso: financingMembers.filter((item) => item.client.estado !== "Al día").length,
+    };
+  }, [financingMembers]);
+
+  // Abre el expediente completo del financiado en el monitor de cuotas.
+  function openFinancingExpediente(clientId: string) {
+    setSelectedMonitorClientId(clientId);
+    setMonitorTab("expediente");
+    setActiveSection("monitor-cuotas");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function handleRegisterOperationalCharge() {
@@ -2082,6 +2793,22 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     setMonitorCedulaSearch(normalizeCedula(client.documento));
     setMonitorTab(tab);
     setMonitorSearchError("");
+  }
+
+  /**
+   * Abre el EXPEDIENTE del cliente y baja automáticamente a la sección de cuotas
+   * ("Cronograma completo de cuotas"). Es lo que usa el botón "Ver cuotas".
+   */
+  function openMonitorClientCuotas(clientId: string) {
+    openMonitorClient(clientId, "expediente");
+
+    if (typeof window === "undefined") return;
+
+    window.setTimeout(() => {
+      document
+        .getElementById("monitor-cuotas-cronograma")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 300);
   }
 
   function openContractDossier(contractId: string, searchCedula?: string) {
@@ -2381,11 +3108,10 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
 
   const navItems = [
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
-    { id: "finanzas", label: "Finanzas", icon: LineChartIcon },
     { id: "monitor-cuotas", label: "Monitor de cuotas", icon: Activity },
-    { id: "flota", label: "Flota", icon: Truck },
+    { id: "financiamiento", label: "Financiamiento por modelo", icon: Wallet },
+    { id: "financiados", label: "Financiados", icon: Users },
     { id: "contratos", label: "Contratos", icon: FileCheck2 },
-    { id: "gestion", label: "Gestión", icon: BriefcaseBusiness },
     { id: "register-user", label: "Register user", icon: UserPlus },
   ] as const;
 
@@ -2489,11 +3215,10 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
 
   function handleNav(sectionId: string) {
     if (
-      sectionId === "finanzas" ||
       sectionId === "monitor-cuotas" ||
-      sectionId === "flota" ||
+      sectionId === "financiamiento" ||
+      sectionId === "financiados" ||
       sectionId === "contratos" ||
-      sectionId === "gestion" ||
       sectionId === "register-user"
     ) {
       setActiveSection(sectionId);
@@ -2655,6 +3380,25 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
             </div>
           </article>
 
+          {monitorLoadError ? (
+            <div className="mt-3 flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-900">No se pudieron cargar los expedientes</p>
+                <p className="mt-1 text-xs text-amber-800">{monitorLoadError}</p>
+                <p className="mt-1 text-xs font-semibold text-amber-900">
+                  Tus expedientes siguen guardados: solo se eliminan a mano desde el botón «Eliminar participante».
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadMonitorClients()}
+                className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-900 transition hover:bg-amber-100"
+              >
+                Reintentar
+              </button>
+            </div>
+          ) : null}
+
           {monitorTab === "expediente" && (
             <article className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
               <div className="border-b border-zinc-200 bg-gradient-to-r from-zinc-950 via-zinc-900 to-sky-950 px-5 py-5 text-white lg:px-6">
@@ -2682,6 +3426,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                         alt="Foto del cliente"
                         width={280}
                         height={320}
+                        unoptimized
                         className="h-56 w-48 rounded-2xl border border-zinc-200 bg-white object-cover shadow-sm"
                       />
                       <h4 className="mt-4 text-xl font-semibold text-zinc-900">{selectedMonitorClient.nombre}</h4>
@@ -2702,7 +3447,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                         <span className="font-semibold text-zinc-900">{selectedMonitorClient.telefono}</span>
                       </div>
                       <div className="flex items-start justify-between gap-3">
-                        <span className="text-zinc-500">Agencia</span>
+                        <span className="text-zinc-500">Grupo</span>
                         <span className="font-semibold text-zinc-900">{selectedMonitorClient.agencia}</span>
                       </div>
                       <div className="flex items-start justify-between gap-3">
@@ -2792,8 +3537,13 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             ["Ocupación", selectedMonitorProfile.ocupacion],
                             ["Empresa o actividad económica", selectedMonitorProfile.empresa],
                             ["Referencias", selectedMonitorProfile.references || "No registradas"],
-                            ["Usuario de acceso", selectedMonitorProfile.username || "No registrado"],
-                            ["Clave de acceso", "Visible al registrar expediente"],
+                            ["Usuario de acceso", selectedMonitorProfile.credenciales?.usuario || selectedMonitorProfile.username || "No registrado"],
+                            [
+                              "Clave de acceso",
+                              selectedMonitorProfile.credenciales?.disponible
+                                ? selectedMonitorProfile.credenciales.clave
+                                : "Pendiente de guardar (ver tarjeta «Credenciales de acceso»)",
+                            ],
                             ["Grupo Asignado correspondiente actual", selectedMonitorClient.agencia],
                             ["Gestor responsable", selectedMonitorClient.gestor || "Gestor asignado por agencia"],
                             ["Plan contratado", selectedMonitorProfile.plan],
@@ -2814,6 +3564,97 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                       </div>
                     </article>
 
+                    <article className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Credenciales de acceso</p>
+                          <h5 className="text-sm font-semibold text-zinc-900">Usuario y clave del miembro</h5>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleGenerateCredentials(selectedMonitorProfile.cedula, selectedMonitorClient.id)}
+                          disabled={credentialsBusyCedula === selectedMonitorProfile.cedula}
+                          className="rounded-lg border border-zinc-900 bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {credentialsBusyCedula === selectedMonitorProfile.cedula
+                            ? "Guardando..."
+                            : selectedMonitorProfile.credenciales?.disponible
+                              ? "Generar nueva clave"
+                              : "Generar clave nueva"}
+                        </button>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Usuario</p>
+                          <p className="mt-1 break-all font-mono text-sm font-semibold text-zinc-900">
+                            {selectedMonitorProfile.credenciales?.usuario || selectedMonitorProfile.username || "No registrado"}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Clave</p>
+                          {selectedMonitorProfile.credenciales?.disponible ? (
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <span className="break-all font-mono text-sm font-semibold text-zinc-900">
+                                {selectedMonitorProfile.credenciales.clave}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard?.writeText(selectedMonitorProfile.credenciales?.clave ?? "");
+                                  setCredentialsNotice("Clave copiada al portapapeles.");
+                                }}
+                                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100"
+                              >
+                                Copiar
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="mt-2 space-y-2">
+                              <p className="text-xs font-medium text-zinc-600">
+                                Este miembro se registró antes de este cambio, así que su clave no está guardada.
+                                Pega la clave que le entregaste (no cambia su acceso) o genera una nueva.
+                              </p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  value={credentialsDraft}
+                                  onChange={(event) => setCredentialsDraft(event.target.value.toUpperCase())}
+                                  placeholder="SAN-MEMBER-XXXXXX"
+                                  className="w-44 rounded-md border border-zinc-300 bg-white px-2 py-1 font-mono text-xs uppercase text-zinc-900"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleGenerateCredentials(selectedMonitorProfile.cedula, selectedMonitorClient.id, credentialsDraft)}
+                                  disabled={
+                                    credentialsBusyCedula === selectedMonitorProfile.cedula
+                                    || !MEMBER_KEY_INPUT_PATTERN.test(credentialsDraft.trim().toUpperCase())
+                                  }
+                                  className="rounded-md border border-emerald-600 bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Guardar clave
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 sm:col-span-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Emitida / actualizada</p>
+                          <p className="mt-1 text-sm font-semibold text-zinc-900">
+                            {selectedMonitorProfile.credenciales?.disponible ? selectedMonitorProfile.credenciales.emitidaEn : "No registrada"}
+                          </p>
+                        </div>
+                      </div>
+
+                      {credentialsError ? (
+                        <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{credentialsError}</p>
+                      ) : null}
+                      {credentialsNotice ? (
+                        <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">{credentialsNotice}</p>
+                      ) : null}
+                    </article>
+
                     <article className="grid gap-4 lg:grid-cols-2">
                       <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                         <div className="mb-3 flex items-center justify-between">
@@ -2832,7 +3673,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                                 { label: "Titular", value: selectedMonitorClient.nombre },
                                 { label: "Cédula", value: `V-${selectedMonitorProfile.cedula}` },
                                 { label: "Código expediente", value: codigoExpediente },
-                                { label: "Agencia", value: selectedMonitorClient.agencia },
+                                { label: "Grupo", value: selectedMonitorClient.agencia },
                                 { label: "Estado", value: "Verificado" },
                               ]
                             )}
@@ -2841,7 +3682,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             Ver completa
                           </button>
                         </div>
-                        <Image src={selectedMonitorProfile.fotoCedula} alt="Cédula del cliente" width={640} height={420} className="h-52 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
+                        <Image src={selectedMonitorProfile.fotoCedula} alt="Cédula del cliente" width={640} height={420} unoptimized className="h-52 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
                       </div>
 
                       <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
@@ -2862,7 +3703,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                                 { label: "Documento", value: rifDocumentoRecord?.nombre ?? "RIF vigente" },
                                 { label: "Código expediente", value: codigoExpediente },
                                 { label: "Empresa declarada", value: selectedMonitorProfile.empresa },
-                                { label: "Agencia", value: selectedMonitorClient.agencia },
+                                { label: "Grupo", value: selectedMonitorClient.agencia },
                                 { label: "Estado", value: "Vigente" },
                               ]
                             )}
@@ -2871,7 +3712,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             Ver completo
                           </button>
                         </div>
-                        <Image src={selectedMonitorProfile.fotoRif} alt="RIF del cliente" width={640} height={420} className="h-52 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
+                        <Image src={selectedMonitorProfile.fotoRif} alt="RIF del cliente" width={640} height={420} unoptimized className="h-52 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
                       </div>
                     </article>
                   </div>
@@ -2908,8 +3749,45 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             <p className="mt-1 text-sm font-semibold text-zinc-900">{formatMoneyUSD(selectedMonitorProfile.cuotaMensual)}</p>
                           </div>
                           <div>
-                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Saldo actual</p>
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Saldo que debe</p>
                             <p className="mt-1 text-sm font-semibold text-zinc-900">{formatMoneyUSD(deudaProyecto)}</p>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Ubicaciones del cliente</p>
+                          <div className="mt-3 grid gap-3">
+                            <div>
+                              {selectedMonitorProfile.ubicacionLat != null && selectedMonitorProfile.ubicacionLng != null ? (
+                                <SavedLocationPreview
+                                  label="Ubicación del cliente"
+                                  lat={selectedMonitorProfile.ubicacionLat}
+                                  lng={selectedMonitorProfile.ubicacionLng}
+                                />
+                              ) : (
+                                <MissingLocationPreview label="Ubicación del cliente" />
+                              )}
+                            </div>
+
+                            {selectedMonitorProfile.referenciaLat != null && selectedMonitorProfile.referenciaLng != null ? (
+                              <SavedLocationPreview
+                                label="Ubicación de la referencia 1"
+                                lat={selectedMonitorProfile.referenciaLat}
+                                lng={selectedMonitorProfile.referenciaLng}
+                              />
+                            ) : (
+                              <MissingLocationPreview label="Ubicación de la referencia 1" />
+                            )}
+
+                            {selectedMonitorProfile.referencia2Lat != null && selectedMonitorProfile.referencia2Lng != null ? (
+                              <SavedLocationPreview
+                                label="Ubicación de la referencia 2"
+                                lat={selectedMonitorProfile.referencia2Lat}
+                                lng={selectedMonitorProfile.referencia2Lng}
+                              />
+                            ) : (
+                              <MissingLocationPreview label="Ubicación de la referencia 2" />
+                            )}
                           </div>
                         </div>
 
@@ -2932,7 +3810,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                       <div className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"><span className="text-zinc-600">Cuotas vencidas</span><strong className="text-rose-700">{cuotasVencidasCronograma}</strong></div>
                       <div className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"><span className="text-zinc-600">Cuotas restantes</span><strong className="text-zinc-900">{cuotasRestantes}</strong></div>
                       <div className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"><span className="text-zinc-600">Total pagado</span><strong className="text-emerald-700">{formatMoneyUSD(pagoAcumulado)}</strong></div>
-                      <div className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"><span className="text-zinc-600">Saldo restante</span><strong className="text-amber-700">{formatMoneyUSD(deudaProyecto)}</strong></div>
+                      <div className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2"><span className="text-zinc-600">Saldo pendiente por pagar</span><strong className="text-amber-700">{formatMoneyUSD(deudaProyecto)}</strong></div>
                     </div>
 
                     <div className="mt-4 grid gap-3 text-sm">
@@ -2978,7 +3856,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                       <p className="text-sm text-zinc-500">Documento fiscal principal vinculado a la compra del activo.</p>
                     </div>
                     <div className="grid gap-4 p-4 md:grid-cols-[280px_minmax(0,1fr)]">
-                      <Image src={facturaPrincipal.archivo} alt={facturaPrincipal.nombre} width={560} height={380} className="h-56 w-full rounded-2xl border border-zinc-200 bg-zinc-50 object-cover" />
+                      <Image src={facturaPrincipal.archivo} alt={facturaPrincipal.nombre} width={560} height={380} unoptimized className="h-56 w-full rounded-2xl border border-zinc-200 bg-zinc-50 object-cover" />
                       <div className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
                           <div>
@@ -3026,7 +3904,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             <span className="rounded-full bg-zinc-900 px-2 py-1 text-xs font-semibold text-white">{contract.estado}</span>
                           </div>
                           <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
-                            <Image src={contract.archivo} alt={contract.tipo} width={320} height={220} className="h-28 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
+                            <Image src={contract.archivo} alt={contract.tipo} width={320} height={220} unoptimized className="h-28 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
                             <div className="grid gap-2 text-sm text-zinc-700">
                               <p><span className="font-semibold text-zinc-900">Tipo:</span> {contract.tipo}</p>
                               <p><span className="font-semibold text-zinc-900">Fecha:</span> {contract.fecha}</p>
@@ -3055,7 +3933,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                             <span className="text-xs font-medium text-zinc-500">{doc.fecha}</span>
                           </div>
                           <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
-                            <Image src={doc.archivo} alt={doc.nombre} width={320} height={220} className="h-28 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
+                            <Image src={doc.archivo} alt={doc.nombre} width={320} height={220} unoptimized className="h-28 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
                             <div className="grid gap-2 text-sm text-zinc-700">
                               <p><span className="font-semibold text-zinc-900">Tipo:</span> {doc.tipo}</p>
                               <p>Documento archivado y validado dentro del expediente consultado.</p>
@@ -3107,7 +3985,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                   </div>
                 </section>
 
-                <section className="rounded-2xl border border-zinc-200 bg-white">
+                <section id="monitor-cuotas-cronograma" className="rounded-2xl border border-zinc-200 bg-white scroll-mt-24">
                   <div className="border-b border-zinc-200 px-4 py-3">
                     <h4 className="text-base font-semibold text-zinc-900">Cronograma completo de cuotas</h4>
                     <p className="text-sm text-zinc-500">Detalle ordenado una por una de las {cuotasTotalesPlan} cuotas del plan.</p>
@@ -3625,30 +4503,60 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
           <>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <article className="rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-zinc-50 p-5 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)]">
+            <button
+              type="button"
+              onClick={() => {
+                setMonitorFocusSearch("");
+                setMonitorFocusGroup("todos");
+              }}
+              className="group rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-zinc-50 p-5 text-left shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-[0_28px_55px_-30px_rgba(2,132,199,0.35)]"
+            >
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-zinc-500">Clientes en cartera</p>
                 <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">Monitor</span>
               </div>
               <p className="mt-3 text-3xl font-semibold tracking-tight text-zinc-900">{cuotaMonitorStats.totalClientes}</p>
-              <p className="mt-2 text-xs text-zinc-500">Seguimiento activo por agencia</p>
-            </article>
-            <article className="rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-rose-50 p-5 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)]">
+              <p className="mt-2 text-xs text-zinc-500">Seguimiento activo por grupo</p>
+              <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-sky-700 opacity-0 transition group-hover:opacity-100">
+                Ver cartera completa <ChevronRight className="h-3.5 w-3.5" />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMonitorFocusSearch("");
+                setMonitorFocusGroup("atraso");
+              }}
+              className="group rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-rose-50 p-5 text-left shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:border-rose-300 hover:shadow-[0_28px_55px_-30px_rgba(225,29,72,0.4)]"
+            >
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-zinc-500">Con atraso</p>
                 <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[11px] font-semibold text-rose-700">Atención</span>
               </div>
               <p className="mt-3 text-3xl font-semibold tracking-tight text-rose-600">{cuotaMonitorStats.clientesEnAtraso}</p>
               <p className="mt-2 text-xs text-zinc-500">{cuotaMonitorStats.totalVencidas} cuotas vencidas</p>
-            </article>
-            <article className="rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-emerald-50 p-5 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)]">
+              <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 opacity-0 transition group-hover:opacity-100">
+                Ver clientes con retraso <ChevronRight className="h-3.5 w-3.5" />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMonitorFocusSearch("");
+                setMonitorFocusGroup("aldia");
+              }}
+              className="group rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-emerald-50 p-5 text-left shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_28px_55px_-30px_rgba(5,150,105,0.4)]"
+            >
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-zinc-500">Al día</p>
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">Solvente</span>
               </div>
               <p className="mt-3 text-3xl font-semibold tracking-tight text-emerald-600">{cuotaMonitorStats.clientesAlDia}</p>
               <p className="mt-2 text-xs text-zinc-500">Clientes sin mora vigente</p>
-            </article>
+              <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 opacity-0 transition group-hover:opacity-100">
+                Ver clientes al día <ChevronRight className="h-3.5 w-3.5" />
+              </span>
+            </button>
             <article className="rounded-3xl border border-zinc-200/80 bg-gradient-to-br from-white via-white to-sky-50 p-5 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.28)]">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-zinc-500">Saldo pendiente consolidado</p>
@@ -4159,6 +5067,26 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
             </div>
           ) : null}
 
+          {monitorFocusGroup ? (
+            <MonitorFocusPanel
+              group={monitorFocusGroup}
+              clients={monitorFocusClients}
+              profiles={monitorProfilesSource}
+              installments={monitorInstallmentsSource}
+              search={monitorFocusSearch}
+              onSearchChange={setMonitorFocusSearch}
+              onClose={() => setMonitorFocusGroup(null)}
+              onOpenClient={(clientId, target) => {
+                setMonitorFocusGroup(null);
+                if (target === "cuotas") {
+                  openMonitorClientCuotas(clientId);
+                } else {
+                  openMonitorClient(clientId, "expediente");
+                }
+              }}
+            />
+          ) : null}
+
           <div className="grid gap-4 xl:grid-cols-3">
             <article className="rounded-2xl border border-zinc-200 bg-white p-4 xl:col-span-2">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -4183,7 +5111,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                   <thead>
                     <tr className="border-b border-zinc-200 text-left text-zinc-500">
                       <th className="py-2 pr-3">Cliente</th>
-                      <th className="py-2 pr-3">Agencia</th>
+                      <th className="py-2 pr-3">Grupo</th>
                       <th className="py-2 pr-3">Estado</th>
                       <th className="py-2 pr-3">Pend.</th>
                       <th className="py-2 pr-3">Venc.</th>
@@ -4218,7 +5146,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                         <td className="py-2">
                           <button
                             onClick={() => {
-                              openMonitorClient(client.id, "operaciones");
+                              openMonitorClientCuotas(client.id);
                             }}
                             className={`rounded-lg px-3 py-1 text-xs font-semibold ${
                               selectedMonitorClientId === client.id
@@ -4233,7 +5161,13 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                     ))}
                     {filteredPortfolioClients.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-4 text-center text-sm text-zinc-500">No hay resultados para esta búsqueda.</td>
+                        <td colSpan={7} className="py-4 text-center text-sm text-zinc-500">
+                          {monitorPortfolioSearch.trim()
+                            ? "No hay resultados para esta búsqueda."
+                            : monitorLoadError
+                              ? "No se pudieron cargar los expedientes (revisa el aviso de arriba)."
+                              : "Todavía no hay expedientes registrados."}
+                        </td>
                       </tr>
                     ) : null}
                   </tbody>
@@ -4404,828 +5338,294 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </section>
         )}
 
-        {activeSection === "finanzas" && (
-        <section id="finanzas" className="space-y-4 scroll-mt-24">
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">Finance Intelligence SAN</p>
-                <h2 className="text-lg font-semibold text-zinc-900">Mercado de motos y agencias nacionales</h2>
-              </div>
-              <p className="text-xs text-zinc-500">Tiempo real · {clockTimeText}</p>
-            </div>
-
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {motoMarketFeed.map((item) => (
-                <article key={item.id} className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
-                  <p className="text-sm font-medium text-zinc-700">{item.label}</p>
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <p className="font-mono text-xl font-semibold text-zinc-900">{item.value}</p>
-                    <p className={`text-sm font-semibold ${item.change >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                      {item.change >= 0 ? "+" : ""}
-                      {item.change.toFixed(2)}%
-                    </p>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </article>
-
-          <div className="grid gap-4 md:grid-cols-3">
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-sm text-zinc-500">Recuperación de cartera</p>
-              <p className="mt-1 text-3xl font-semibold text-emerald-600">{recoveryRate}%</p>
-              <p className="mt-1 text-xs text-zinc-500">Actualización continua</p>
-            </article>
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-sm text-zinc-500">Cobertura de caja</p>
-              <p className="mt-1 text-3xl font-semibold text-sky-700">{cashCoverage}x</p>
-              <p className="mt-1 text-xs text-zinc-500">Liquidez operativa diaria</p>
-            </article>
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-sm text-zinc-500">Último corte financiero</p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">{clockTimeText}</p>
-              <p className="mt-1 text-xs text-zinc-500">Centro de control SAN</p>
-            </article>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-3">
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4 xl:col-span-2">
-              <div className="mb-3 flex items-center gap-2">
-                <LineChartIcon className="h-4 w-4 text-zinc-700" />
-                <h2 className="font-semibold text-zinc-900">Rendimiento financiero industrial</h2>
-              </div>
-              <div className="h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={revenueData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e4e4e7" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} stroke="#71717a" />
-                    <YAxis axisLine={false} tickLine={false} stroke="#71717a" />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "#ffffff",
-                        borderRadius: "12px",
-                        border: "1px solid #e4e4e7",
-                        color: "#18181b",
-                      }}
-                    />
-                    <Line type="monotone" dataKey="ingresos" stroke="#16a34a" strokeWidth={3} dot={false} name="Ingresos" />
-                    <Line type="monotone" dataKey="morosidad" stroke="#dc2626" strokeWidth={3} dot={false} name="Morosidad" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </article>
-
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4 text-zinc-700" />
-                <h2 className="font-semibold text-zinc-900">Alertas operativas</h2>
-              </div>
-              <div className="space-y-2 text-sm text-zinc-700">
-                {alerts.map((alert) => (
-                  <p key={alert} className="rounded-lg border border-zinc-200 bg-zinc-50 p-2">
-                    {alert}
-                  </p>
-                ))}
-              </div>
-            </article>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-3">
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4 xl:col-span-2">
-              <p className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">Radar financiero</p>
-              <div className="grid gap-2 md:grid-cols-2">
-                {instruments.map((instrument) => (
-                  <article key={instrument.symbol} className="rounded border border-zinc-200 bg-zinc-50 p-2.5">
-                    <div className="mb-1 flex items-end justify-between">
-                      <p className="text-sm font-semibold text-zinc-800">{instrument.symbol}</p>
-                      <p className={`text-sm font-semibold ${instrument.change >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                        {instrument.change >= 0 ? "+" : ""}
-                        {instrument.change.toFixed(2)}%
-                      </p>
-                    </div>
-                    <p className="font-mono text-3xl font-semibold text-zinc-900">{formatInstrumentValue(instrument)}</p>
-                    <svg viewBox="0 0 220 52" className="mt-1 h-12 w-full">
-                      <polyline
-                        fill="none"
-                        stroke={instrument.change >= 0 ? "#22c55e" : "#ef4444"}
-                        strokeWidth="2.5"
-                        points={sparklinePath(instrument.series)}
-                      />
-                    </svg>
-                  </article>
-                ))}
-              </div>
-            </article>
-
-            <div className="space-y-4">
-              <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">Asignación de cartera</p>
-                <div className="mx-auto h-44 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={allocationData} dataKey="value" innerRadius={44} outerRadius={68} paddingAngle={1}>
-                        {allocationData.map((entry) => (
-                          <Cell key={entry.name} fill={entry.color} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs">
-                  {allocationData.map((row) => (
-                    <div key={row.name} className="flex items-center justify-between py-0.5">
-                      <span className="text-zinc-500">{row.name}</span>
-                      <span style={{ color: row.color }}>{row.value}%</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">Distribución de liquidez</p>
-                <div className="mx-auto h-44 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={liquidityData} dataKey="value" innerRadius={44} outerRadius={68} paddingAngle={1}>
-                        {liquidityData.map((entry) => (
-                          <Cell key={entry.name} fill={entry.color} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs">
-                  {liquidityData.map((row) => (
-                    <div key={row.name} className="flex items-center justify-between py-0.5">
-                      <span className="text-zinc-500">{row.name}</span>
-                      <span style={{ color: row.color }}>{row.value}%</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </div>
-          </div>
-
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">Flujo de tesorería intradía</p>
-              <p className="text-xs text-zinc-500">Tiempo real · {clockTimeText}</p>
-            </div>
-            <div className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={treasuryFlow}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e4e4e7" />
-                  <XAxis dataKey="slot" axisLine={false} tickLine={false} stroke="#71717a" />
-                  <YAxis axisLine={false} tickLine={false} stroke="#71717a" />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#ffffff",
-                      borderRadius: "12px",
-                      border: "1px solid #e4e4e7",
-                      color: "#18181b",
-                    }}
-                  />
-                  <Bar dataKey="ingresos" fill="#16a34a" radius={[4, 4, 0, 0]} name="Ingresos MM" />
-                  <Bar dataKey="egresos" fill="#f97316" radius={[4, 4, 0, 0]} name="Egresos MM" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-
-          <article className="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-zinc-900">
-            <div className="border-b border-zinc-200 px-4 py-2 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold uppercase tracking-[0.14em] text-sky-700">SAN ECONOMIC RELEASE</p>
-                <p className="text-zinc-400">Siguiente corte: 08:30 · {clockTimeText}</p>
-              </div>
-            </div>
-
-            <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold text-sky-700">Índice de pago de cuotas TEAM SAN</p>
-                <p className="font-semibold text-zinc-700">Detalle de liberación económica</p>
-              </div>
-            </div>
-
-            <div className="grid gap-4 px-4 py-3 lg:grid-cols-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-amber-400">Release Name</p>
-                <p className="mt-1 text-sm text-zinc-700">Cuotas cobradas por estructura operativa (SAAR)</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-amber-400">Country/Region</p>
-                <p className="mt-1 text-sm text-zinc-700">Venezuela · Operación SAN</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-amber-400">Release Time</p>
-                <p className="mt-1 text-sm text-zinc-700">{clockDateText} 08:30</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-amber-400">Source</p>
-                <p className="mt-1 text-sm text-zinc-700">Unidad Financiera SAN</p>
-              </div>
-            </div>
-
-            <div className="grid gap-2 border-y border-zinc-200 bg-zinc-50 px-4 py-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
-              <p className="text-zinc-700">
-                Actual <span className="ml-1 font-semibold text-sky-700">{releaseLive.actual}k</span>
+        {activeSection === "financiamiento" && (
+          <section className="space-y-5">
+            <header className="rounded-2xl border border-zinc-200 bg-white p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Financiamiento</p>
+              <h2 className="mt-1 text-lg font-semibold text-zinc-900">
+                50% inicial + cuotas quincenales por modelo de moto
+              </h2>
+              <p className="mt-2 max-w-3xl text-sm text-zinc-600">
+                Configura por cada modelo: precio base, porcentaje del inicial, cantidad de cuotas quincenales y el monto
+                de cada cuota. El inicial y el saldo se calculan solos; el monto de la cuota lo defines tú.
               </p>
-              <p className="text-zinc-700">
-                Survey <span className="ml-1 font-semibold text-violet-700">{releaseLive.survey}k</span>
-              </p>
-              <p className="text-zinc-700">
-                Prior <span className="ml-1 font-semibold text-zinc-900">{releaseLive.prior}k</span>
-              </p>
-              <p className="text-zinc-700">
-                Revised <span className="ml-1 font-semibold text-zinc-900">{releaseLive.revised}k</span>
-              </p>
-            </div>
 
-            <div className="h-[320px] px-2 pb-2 pt-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={releaseChartData}>
-                  <CartesianGrid strokeDasharray="4 4" stroke="#e4e4e7" />
-                  <XAxis dataKey="year" stroke="#64748b" tickLine={false} axisLine={false} />
-                  <YAxis stroke="#64748b" tickLine={false} axisLine={false} domain={[700, 1500]} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#ffffff",
-                      border: "1px solid #e4e4e7",
-                      borderRadius: "10px",
-                      color: "#0f172a",
-                    }}
-                  />
-                  <Line type="monotone" dataKey="actual" stroke="#38bdf8" strokeWidth={3} dot={false} name="Actual" />
-                  <Line type="monotone" dataKey="survey" stroke="#a78bfa" strokeWidth={2.5} dot={false} strokeDasharray="6 4" name="Survey" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void saveFinancingModels()}
+                  disabled={financingBusy || financingLoading || financingModels.length === 0}
+                  className="rounded-lg border border-zinc-900 bg-zinc-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {financingBusy ? "Guardando..." : "Guardar cambios"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadFinancingModels()}
+                  disabled={financingBusy || financingLoading}
+                  className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {financingLoading ? "Cargando..." : "Recargar"}
+                </button>
+                <span className="text-xs text-zinc-500">
+                  {financingSummary.configurados} de {financingSummary.total} modelos con precio
+                </span>
+                {financingNotice ? (
+                  <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                    {financingNotice}
+                  </span>
+                ) : null}
+                {financingError ? (
+                  <span className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">
+                    {financingError}
+                  </span>
+                ) : null}
+              </div>
+            </header>
 
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">Ventana de precios por agencias y estados</p>
-              <p className="text-xs text-zinc-500">Bajan/Suben por marca · actualización automática</p>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-zinc-200 text-left text-zinc-500">
-                    <th className="py-2 pr-3">Agencia</th>
-                    <th className="py-2 pr-3">Estado</th>
-                    <th className="py-2 pr-3">Marca / Modelo</th>
-                    <th className="py-2 pr-3">Precio actual</th>
-                    <th className="py-2 pr-3">Variación</th>
-                    <th className="py-2">Stock</th>
+            <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
+              <table className="w-full min-w-[1080px] text-sm">
+                <thead className="bg-zinc-100 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                  <tr>
+                    <th className="px-3 py-3 text-left">Modelo</th>
+                    <th className="px-3 py-3 text-left">Precio base</th>
+                    <th className="px-3 py-3 text-left">% inicial</th>
+                    <th className="px-3 py-3 text-left">Cuotas quincenales</th>
+                    <th className="px-3 py-3 text-left">Monto por cuota</th>
+                    <th className="px-3 py-3 text-left">Inicial</th>
+                    <th className="px-3 py-3 text-left">Saldo</th>
+                    <th className="px-3 py-3 text-left">Sugerida</th>
+                    <th className="px-3 py-3 text-left">Activo</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {agencyMarketRows.map((row) => (
-                    <tr key={`${row.agency}-${row.model}`} className="border-b border-zinc-100 text-zinc-700">
-                      <td className="py-2 pr-3 font-medium text-zinc-900">{row.agency}</td>
-                      <td className="py-2 pr-3">{row.state}</td>
-                      <td className="py-2 pr-3">{row.brand} · {row.model}</td>
-                      <td className="py-2 pr-3 font-semibold text-zinc-900">{formatMoneyUSD(row.priceUsd)}</td>
-                      <td className="py-2 pr-3">
-                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${row.variation >= 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                          {row.variation >= 0 ? "Subió" : "Bajó"} {Math.abs(row.variation).toFixed(2)}%
+                  {financingModels.map((model) => {
+                    const detail = computeFinancing({
+                      precioBase: model.precioBase,
+                      porcentajeInicial: model.porcentajeInicial,
+                      cuotasQuincenales: model.cuotasQuincenales,
+                      montoCuota: model.montoCuota,
+                    });
+
+                    return (
+                      <tr key={model.slug} className="border-t border-zinc-200">
+                        <td className="px-3 py-3">
+                          <p className="font-semibold text-zinc-900">{model.nombre}</p>
+                          <p className="text-xs text-zinc-500">
+                            {model.categoria}
+                            {model.guardado ? "" : " · sin configurar"}
+                          </p>
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={model.precioBase || ""}
+                            onChange={(event) => updateFinancingRow(model.slug, { precioBase: Number(event.target.value || 0) })}
+                            className="w-28 rounded-md border border-zinc-300 px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={model.porcentajeInicial}
+                            onChange={(event) => updateFinancingRow(model.slug, { porcentajeInicial: Number(event.target.value || 0) })}
+                            className="w-20 rounded-md border border-zinc-300 px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="number"
+                            min={1}
+                            max={200}
+                            value={model.cuotasQuincenales}
+                            onChange={(event) => updateFinancingRow(model.slug, { cuotasQuincenales: Number(event.target.value || 0) })}
+                            className="w-20 rounded-md border border-zinc-300 px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={model.montoCuota || ""}
+                            placeholder={String(detail.cuotaSugerida)}
+                            onChange={(event) => updateFinancingRow(model.slug, { montoCuota: Number(event.target.value || 0) })}
+                            className="w-24 rounded-md border border-zinc-300 px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="px-3 py-3 font-semibold text-zinc-900">${detail.inicial.toFixed(2)}</td>
+                        <td className="px-3 py-3 text-zinc-700">${detail.saldo.toFixed(2)}</td>
+                        <td className="px-3 py-3 text-zinc-700">
+                          <span className="font-semibold text-zinc-900">${detail.cuota.toFixed(2)}</span>
+                          {detail.usaMontoManual && Math.abs(detail.diferencia) >= 0.01 ? (
+                            <span
+                              className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                detail.diferencia > 0 ? "bg-amber-100 text-amber-800" : "bg-sky-100 text-sky-800"
+                              }`}
+                            >
+                              {detail.diferencia > 0 ? "cobra +" : "cobra -"}${Math.abs(detail.diferencia).toFixed(2)}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={model.activo}
+                            onChange={(event) => updateFinancingRow(model.slug, { activo: event.target.checked })}
+                            className="h-4 w-4"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {financingLoading && financingModels.length === 0 ? (
+                <p className="px-4 py-6 text-sm text-zinc-500">Cargando modelos…</p>
+              ) : null}
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Total inicial (modelos con precio)</p>
+                <p className="mt-1 text-lg font-semibold text-zinc-900">${financingSummary.totalInicial.toFixed(2)}</p>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Total a cobrar en cuotas</p>
+                <p className="mt-1 text-lg font-semibold text-zinc-900">${financingSummary.totalCuotas.toFixed(2)}</p>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Plan</p>
+                <p className="mt-1 text-sm font-medium text-zinc-700">
+                  Inicial configurable (50% por defecto) + cuotas cada 15 días.
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {activeSection === "financiados" && (
+          <section className="space-y-5">
+            <header className="rounded-2xl border border-zinc-200 bg-white p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Financiamiento individual</p>
+              <h2 className="mt-1 text-lg font-semibold text-zinc-900">Personas en el sistema de financiamiento</h2>
+              <p className="mt-2 max-w-3xl text-sm text-zinc-600">
+                Cada financiado es <span className="font-semibold">individual</span>: no pertenece a ningún grupo operativo.
+                Abre su expediente para ver documentos, credenciales y el detalle de sus cuotas quincenales.
+              </p>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Financiados</p>
+                  <p className="mt-1 text-lg font-semibold text-zinc-900">{financingMembersSummary.total}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Saldo por cobrar</p>
+                  <p className="mt-1 text-lg font-semibold text-zinc-900">${financingMembersSummary.saldo.toFixed(2)}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Cuotas pendientes</p>
+                  <p className="mt-1 text-lg font-semibold text-zinc-900">{financingMembersSummary.cuotasPendientes}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Con atraso</p>
+                  <p className={`mt-1 text-lg font-semibold ${financingMembersSummary.conAtraso > 0 ? "text-amber-700" : "text-zinc-900"}`}>
+                    {financingMembersSummary.conAtraso}
+                  </p>
+                </div>
+              </div>
+            </header>
+
+            <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
+              <table className="w-full min-w-[1040px] text-sm">
+                <thead className="bg-zinc-100 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                  <tr>
+                    <th className="px-3 py-3 text-left">Cliente</th>
+                    <th className="px-3 py-3 text-left">Cédula</th>
+                    <th className="px-3 py-3 text-left">Moto</th>
+                    <th className="px-3 py-3 text-left">Cuota quincenal</th>
+                    <th className="px-3 py-3 text-left">Cuotas</th>
+                    <th className="px-3 py-3 text-left">Saldo</th>
+                    <th className="px-3 py-3 text-left">Estado</th>
+                    <th className="px-3 py-3 text-left">Próximo vencimiento</th>
+                    <th className="px-3 py-3 text-left">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {financingMembers.map(({ client, profile, cuotasPagadas, cuotasTotales }) => (
+                    <tr key={client.id} className="border-t border-zinc-200">
+                      <td className="px-3 py-3">
+                        <p className="font-semibold text-zinc-900">{client.nombre}</p>
+                        <p className="text-xs text-zinc-500">{profile?.username || "Sin usuario"}</p>
+                      </td>
+                      <td className="px-3 py-3 text-zinc-700">{client.documento}</td>
+                      <td className="px-3 py-3 text-zinc-700">
+                        {profile?.motoMarca || profile?.motoModelo
+                          ? `${profile?.motoMarca ?? ""} ${profile?.motoModelo ?? ""}`.trim()
+                          : "Por asignar"}
+                      </td>
+                      <td className="px-3 py-3 font-semibold text-zinc-900">
+                        ${Number(profile?.cuotaMensual ?? 0).toFixed(2)}
+                      </td>
+                      <td className="px-3 py-3 text-zinc-700">
+                        {cuotasPagadas}/{cuotasTotales || profile?.cuotasTotales || 0}
+                      </td>
+                      <td className="px-3 py-3 text-zinc-700">${Number(client.saldo ?? 0).toFixed(2)}</td>
+                      <td className="px-3 py-3">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                            client.estado === "Al día"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : client.estado === "Con atraso"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-rose-100 text-rose-800"
+                          }`}
+                        >
+                          {client.estado}
                         </span>
                       </td>
-                      <td className="py-2">{row.stock} unidades</td>
+                      <td className="px-3 py-3 text-zinc-700">{client.proximoVencimiento}</td>
+                      <td className="px-3 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openFinancingExpediente(client.id)}
+                          className="rounded-lg border border-zinc-900 bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
+                        >
+                          Abrir expediente
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+
+              {financingMembers.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-zinc-600">
+                  <p className="font-semibold text-zinc-800">No hay expedientes en el plan de financiamiento</p>
+                  <p className="mx-auto mt-1 max-w-xl">
+                    {monitorClientsSource.length > 0
+                      ? `Tus ${monitorClientsSource.length} expediente(s) están en los planes de 26 y 83 cuotas. Aquí solo aparecen los que contraten el plan «Financiamiento 50% (quincenal)».`
+                      : "Registrá un miembro con el plan «Financiamiento 50% (quincenal)» y aparecerá aquí."}
+                  </p>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Ningún expediente se elimina automáticamente: tus registros siguen completos en el Monitor de cuotas.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection("monitor-cuotas")}
+                    className="mt-3 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                  >
+                    Ver todos en Monitor de cuotas
+                  </button>
+                </div>
+              ) : null}
             </div>
-          </article>
-
-          <article className="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-zinc-900 shadow-sm">
-            <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-zinc-500">Fuente</span>
-                  <span className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-700">Agencias SAN</span>
-                  <span className="text-amber-700">Rango de fecha {new Date().toLocaleDateString("es-VE")} · Hoy</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-zinc-600">
-                  <span className="rounded-md border border-zinc-300 bg-white px-2 py-1">Noticias</span>
-                  <span className="rounded-md border border-zinc-300 bg-white px-2 py-1">Histórico</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-4 p-4 lg:grid-cols-[330px_1fr]">
-              <div className="space-y-2 text-sm">
-                <div className="grid grid-cols-3 gap-2 border-b border-zinc-200 pb-2">
-                  <div>
-                    <p className="text-zinc-500">Inicio</p>
-                    <p className="font-mono text-base text-zinc-900">{movementStats.start.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">Cierre</p>
-                    <p className="font-mono text-base text-zinc-900">{movementStats.end.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">Actual</p>
-                    <p className="font-mono text-base text-zinc-900">{movementStats.current}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2 border-b border-zinc-200 pb-2">
-                  <div>
-                    <p className="text-zinc-500">Cambio neto</p>
-                    <p className={`font-semibold ${movementStats.net >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                      {movementStats.net >= 0 ? "+" : ""}
-                      {movementStats.net.toFixed(2)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">% Cambio</p>
-                    <p className={`font-semibold ${movementStats.percent >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                      {movementStats.percent >= 0 ? "+" : ""}
-                      {movementStats.percent.toFixed(2)}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">Flujo</p>
-                    <p className="font-semibold text-amber-700">Rápido</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <p className="text-zinc-500">#Suben</p>
-                    <p className="font-semibold text-emerald-600">{movementStats.up}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">#Bajan</p>
-                    <p className="font-semibold text-rose-600">{movementStats.down}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">#Sin cambio</p>
-                    <p className="font-semibold text-zinc-700">{movementStats.unchanged}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="h-[170px] rounded-lg border border-zinc-200 bg-zinc-50 p-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={movementSeries}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-                    <XAxis dataKey="slot" axisLine={false} tickLine={false} stroke="#71717a" />
-                    <YAxis axisLine={false} tickLine={false} stroke="#71717a" domain={[4550, 4960]} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "#ffffff",
-                        borderRadius: "10px",
-                        border: "1px solid #e4e4e7",
-                        color: "#18181b",
-                      }}
-                    />
-                    <Line type="monotone" dataKey="index" stroke="#f59e0b" strokeWidth={2.5} dot={false} name="Índice SAN Motos" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="grid gap-4 border-t border-zinc-200 p-4 lg:grid-cols-2">
-              <div>
-                <p className="mb-2 text-sm font-semibold text-zinc-900">Líderes</p>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-zinc-200 text-left text-zinc-500">
-                        <th className="py-1 pr-2">Marca / Estado</th>
-                        <th className="py-1 pr-2">Precio cierre</th>
-                        <th className="py-1 pr-2">% Cambio</th>
-                        <th className="py-1">Puntos</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {movers.leaders.map((row) => (
-                        <tr key={`lead-${row.agency}-${row.model}`} className="border-b border-zinc-100 text-zinc-700">
-                          <td className="py-1 pr-2 text-amber-700">{row.brand} · {row.state}</td>
-                          <td className="py-1 pr-2">{formatMoneyUSD(row.priceUsd)}</td>
-                          <td className="py-1 pr-2 text-emerald-600">+{Math.abs(row.variation).toFixed(2)}%</td>
-                          <td className="py-1 text-emerald-600">+{((row.priceUsd * Math.abs(row.variation)) / 100).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div>
-                <p className="mb-2 text-sm font-semibold text-zinc-900">Rezagados</p>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-zinc-200 text-left text-zinc-500">
-                        <th className="py-1 pr-2">Marca / Estado</th>
-                        <th className="py-1 pr-2">Precio cierre</th>
-                        <th className="py-1 pr-2">% Cambio</th>
-                        <th className="py-1">Puntos</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {movers.laggards.map((row) => (
-                        <tr key={`lag-${row.agency}-${row.model}`} className="border-b border-zinc-100 text-zinc-700">
-                          <td className="py-1 pr-2 text-amber-700">{row.brand} · {row.state}</td>
-                          <td className="py-1 pr-2">{formatMoneyUSD(row.priceUsd)}</td>
-                          <td className="py-1 pr-2 text-rose-600">-{Math.abs(row.variation).toFixed(2)}%</td>
-                          <td className="py-1 text-rose-600">-{((row.priceUsd * Math.abs(row.variation)) / 100).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </article>
-        </section>
-        )}
-
-        {activeSection === "flota" && (
-        <section id="flota-panel" className="space-y-4 scroll-mt-24">
-          <article className="overflow-hidden rounded-[32px] border border-zinc-200/80 bg-gradient-to-br from-white via-sky-50 to-zinc-100 shadow-[0_28px_70px_-40px_rgba(15,23,42,0.35)]">
-            <div className="grid gap-6 p-6 xl:grid-cols-[1.25fr_0.75fr] xl:p-7">
-              <div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="rounded-full bg-sky-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700">
-                    Centro de control
-                  </span>
-                  <span className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] font-semibold text-zinc-600">
-                    Corte {clockTimeText}
-                  </span>
-                </div>
-                <h2 className="mt-4 text-3xl font-semibold tracking-tight text-zinc-950">Flota empresarial y continuidad operativa</h2>
-                <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-600">
-                  Supervisión consolidada de disponibilidad, mantenimiento, cumplimiento y rendimiento por zona para sostener contratos,
-                  rutas críticas y nivel de servicio del parque operativo.
-                </p>
-
-                <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-3xl border border-zinc-200 bg-white/90 p-4 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Unidades totales</p>
-                    <p className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">{fleetData.reduce((acc, item) => acc + item.operativas + item.taller + item.reserva, 0)}</p>
-                    <p className="mt-1 text-xs text-zinc-500">Incluye operativas, taller y respaldo</p>
-                  </div>
-                  <div className="rounded-3xl border border-zinc-200 bg-white/90 p-4 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Disponibilidad</p>
-                    <p className="mt-2 text-3xl font-semibold tracking-tight text-emerald-600">
-                      {(fleetData.reduce((acc, item) => acc + item.operativas, 0) / fleetData.reduce((acc, item) => acc + item.operativas + item.taller + item.reserva, 0) * 100).toFixed(1)}%
-                    </p>
-                    <p className="mt-1 text-xs text-zinc-500">Parque disponible para despacho inmediato</p>
-                  </div>
-                  <div className="rounded-3xl border border-zinc-200 bg-white/90 p-4 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Tickets abiertos</p>
-                    <p className="mt-2 text-3xl font-semibold tracking-tight text-amber-600">{fleetMaintenanceTickets.length}</p>
-                    <p className="mt-1 text-xs text-zinc-500">{fleetMaintenanceTickets.filter((item) => item.priority === "Alta").length} de prioridad alta</p>
-                  </div>
-                  <div className="rounded-3xl border border-zinc-200 bg-white/90 p-4 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Ingreso protegido</p>
-                    <p className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">{formatMoneyUSD(fleetData.reduce((acc, item) => acc + item.ingreso, 0))}</p>
-                    <p className="mt-1 text-xs text-zinc-500">Facturación mensual soportada por la flota</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-[28px] border border-zinc-200 bg-white/90 p-5 shadow-sm">
-                <div className="flex items-center gap-2 text-zinc-900">
-                  <ShieldAlert className="h-5 w-5 text-rose-500" />
-                  <h3 className="font-semibold">Pulso ejecutivo</h3>
-                </div>
-                <div className="mt-4 space-y-3">
-                  {fleetExecutiveAlerts.map((item, index) => (
-                    <div key={`${item}-${index}`} className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Señal {String(index + 1).padStart(2, "0")}</p>
-                      <p className="mt-1 text-sm leading-6 text-zinc-700">{item}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </article>
-
-          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Truck className="h-5 w-5 text-sky-700" />
-                  <div>
-                    <h3 className="font-semibold text-zinc-900">Capacidad operativa por zona</h3>
-                    <p className="text-sm text-zinc-500">Comparativo entre unidades operativas, en taller y de respaldo.</p>
-                  </div>
-                </div>
-                <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">5 regiones auditadas</span>
-              </div>
-              <div className="h-[320px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={fleetData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e4e4e7" />
-                    <XAxis dataKey="zone" axisLine={false} tickLine={false} stroke="#71717a" />
-                    <YAxis axisLine={false} tickLine={false} stroke="#71717a" />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "#ffffff",
-                        borderRadius: "16px",
-                        border: "1px solid #e4e4e7",
-                        color: "#18181b",
-                      }}
-                    />
-                    <Bar dataKey="operativas" stackId="fleet" fill="#0ea5e9" radius={[6, 6, 0, 0]} name="Operativas" />
-                    <Bar dataKey="reserva" stackId="fleet" fill="#94a3b8" name="Reserva" />
-                    <Bar dataKey="taller" stackId="fleet" fill="#f97316" radius={[6, 6, 0, 0]} name="Taller" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {fleetData.map((zone) => (
-                  <div key={zone.zone} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="font-semibold text-zinc-900">{zone.zone}</p>
-                      <span className="text-xs font-semibold text-sky-700">{zone.disponibilidad.toFixed(1)}%</span>
-                    </div>
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200">
-                      <div className="h-full rounded-full bg-sky-600" style={{ width: `${zone.disponibilidad}%` }} />
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-600">
-                      <p>Contratos: <span className="font-semibold text-zinc-900">{zone.contratos}</span></p>
-                      <p>SLA: <span className="font-semibold text-zinc-900">{zone.sla.toFixed(1)}%</span></p>
-                      <p>KM/mes: <span className="font-semibold text-zinc-900">{zone.kmMes.toLocaleString("es-VE")}</span></p>
-                      <p>Ingreso: <span className="font-semibold text-zinc-900">{formatMoneyUSD(zone.ingreso)}</span></p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-
-            <div className="space-y-4">
-              <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-                <div className="mb-4 flex items-center gap-2">
-                  <Gauge className="h-5 w-5 text-zinc-700" />
-                  <div>
-                    <h3 className="font-semibold text-zinc-900">Mezcla de la flota</h3>
-                    <p className="text-sm text-zinc-500">Distribución actual del parque y nivel de contingencia.</p>
-                  </div>
-                </div>
-                <div className="grid items-center gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
-                  <div className="h-[180px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={[
-                            { name: "Operativas", value: fleetData.reduce((acc, item) => acc + item.operativas, 0), color: "#0ea5e9" },
-                            { name: "Reserva", value: fleetData.reduce((acc, item) => acc + item.reserva, 0), color: "#94a3b8" },
-                            { name: "Taller", value: fleetData.reduce((acc, item) => acc + item.taller, 0), color: "#f97316" },
-                          ]}
-                          dataKey="value"
-                          innerRadius={46}
-                          outerRadius={72}
-                          paddingAngle={2}
-                        >
-                          {[
-                            { name: "Operativas", color: "#0ea5e9" },
-                            { name: "Reserva", color: "#94a3b8" },
-                            { name: "Taller", color: "#f97316" },
-                          ].map((entry) => (
-                            <Cell key={entry.name} fill={entry.color} />
-                          ))}
-                        </Pie>
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="space-y-3">
-                    {[
-                      { name: "Operativas", value: fleetData.reduce((acc, item) => acc + item.operativas, 0), color: "bg-sky-500" },
-                      { name: "Reserva", value: fleetData.reduce((acc, item) => acc + item.reserva, 0), color: "bg-slate-400" },
-                      { name: "Taller", value: fleetData.reduce((acc, item) => acc + item.taller, 0), color: "bg-orange-500" },
-                    ].map((entry) => (
-                      <div key={entry.name} className="flex items-center justify-between rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <span className={`h-2.5 w-2.5 rounded-full ${entry.color}`} />
-                          <span className="text-sm text-zinc-700">{entry.name}</span>
-                        </div>
-                        <span className="text-sm font-semibold text-zinc-900">{entry.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </article>
-
-              <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-                <div className="mb-4 flex items-center gap-2">
-                  <ShieldCheck className="h-5 w-5 text-emerald-600" />
-                  <div>
-                    <h3 className="font-semibold text-zinc-900">Cumplimiento y control</h3>
-                    <p className="text-sm text-zinc-500">Seguros, GPS, expedientes y auditoría documental.</p>
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  {fleetComplianceBoard.map((item) => (
-                    <div key={item.label} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-zinc-900">{item.label}</p>
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                            item.tone === "emerald"
-                              ? "bg-emerald-100 text-emerald-700"
-                              : item.tone === "amber"
-                                ? "bg-amber-100 text-amber-700"
-                                : item.tone === "rose"
-                                  ? "bg-rose-100 text-rose-700"
-                                  : "bg-sky-100 text-sky-700"
-                          }`}
-                        >
-                          {item.value}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm text-zinc-600">{item.note}</p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </div>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Route className="h-5 w-5 text-zinc-700" />
-                  <div>
-                    <h3 className="font-semibold text-zinc-900">Tendencia de disponibilidad y SLA</h3>
-                    <p className="text-sm text-zinc-500">Seguimiento del rendimiento operativo y costo técnico de los últimos seis meses.</p>
-                  </div>
-                </div>
-                <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">Últimos 6 cortes</span>
-              </div>
-              <div className="h-[320px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={fleetAvailabilityTrend}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e4e4e7" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} stroke="#71717a" />
-                    <YAxis axisLine={false} tickLine={false} stroke="#71717a" domain={[80, 100]} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "#ffffff",
-                        borderRadius: "16px",
-                        border: "1px solid #e4e4e7",
-                        color: "#18181b",
-                      }}
-                    />
-                    <Line type="monotone" dataKey="disponibilidad" stroke="#0ea5e9" strokeWidth={3} dot={{ r: 4 }} name="Disponibilidad" />
-                    <Line type="monotone" dataKey="sla" stroke="#16a34a" strokeWidth={3} dot={{ r: 4 }} name="SLA" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                {[
-                  { label: "Disponibilidad promedio", value: `${(fleetData.reduce((acc, item) => acc + item.disponibilidad, 0) / fleetData.length).toFixed(1)}%`, tone: "text-sky-700" },
-                  { label: "SLA promedio", value: `${(fleetData.reduce((acc, item) => acc + item.sla, 0) / fleetData.length).toFixed(1)}%`, tone: "text-emerald-600" },
-                  { label: "Costo técnico marzo", value: formatMoneyUSD(fleetAvailabilityTrend[fleetAvailabilityTrend.length - 1]?.costos ?? 0), tone: "text-zinc-900" },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">{item.label}</p>
-                    <p className={`mt-2 text-2xl font-semibold ${item.tone}`}>{item.value}</p>
-                  </div>
-                ))}
-              </div>
-            </article>
-
-            <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-              <div className="mb-4 flex items-center gap-2">
-                <Wrench className="h-5 w-5 text-amber-600" />
-                <div>
-                  <h3 className="font-semibold text-zinc-900">Pipeline de mantenimiento</h3>
-                  <p className="text-sm text-zinc-500">Tickets priorizados por impacto operativo y disponibilidad.</p>
-                </div>
-              </div>
-              <div className="space-y-3">
-                {fleetMaintenanceTickets.map((ticket) => (
-                  <div key={ticket.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-zinc-900">{ticket.id} · {ticket.unit}</p>
-                        <p className="text-xs text-zinc-500">{ticket.zone} · {ticket.provider}</p>
-                      </div>
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                          ticket.priority === "Alta"
-                            ? "bg-rose-100 text-rose-700"
-                            : ticket.priority === "Media"
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-zinc-200 text-zinc-700"
-                        }`}
-                      >
-                        {ticket.priority}
-                      </span>
-                    </div>
-                    <p className="mt-3 text-sm text-zinc-700">{ticket.type}</p>
-                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-zinc-500">
-                      <p>ETA: <span className="font-semibold text-zinc-900">{ticket.eta}</span></p>
-                      <p>Costo: <span className="font-semibold text-zinc-900">{formatMoneyUSD(ticket.cost)}</span></p>
-                      <p>Estado: <span className="font-semibold text-zinc-900">{ticket.status}</span></p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-            <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Activity className="h-5 w-5 text-zinc-700" />
-                  <div>
-                    <h3 className="font-semibold text-zinc-900">Unidades con seguimiento reforzado</h3>
-                    <p className="text-sm text-zinc-500">Control de riesgo, combustible, kilometraje y próximo servicio.</p>
-                  </div>
-                </div>
-                <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">Top {fleetCriticalUnits.length}</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-200 text-left text-zinc-500">
-                      <th className="py-2 pr-3">Unidad</th>
-                      <th className="py-2 pr-3">Operador</th>
-                      <th className="py-2 pr-3">Contrato</th>
-                      <th className="py-2 pr-3">Condición</th>
-                      <th className="py-2 pr-3">Próx. servicio</th>
-                      <th className="py-2">Riesgo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fleetCriticalUnits.map((unit) => (
-                      <tr key={unit.unit} className="border-b border-zinc-100 text-zinc-700">
-                        <td className="py-3 pr-3">
-                          <p className="font-semibold text-zinc-900">{unit.unit}</p>
-                          <p className="text-xs text-zinc-500">{unit.zone} · {unit.model}</p>
-                        </td>
-                        <td className="py-3 pr-3">
-                          <p>{unit.operator}</p>
-                          <p className="text-xs text-zinc-500">Kilometraje: {unit.odometer}</p>
-                        </td>
-                        <td className="py-3 pr-3">
-                          <p>{unit.contract}</p>
-                          <p className="text-xs text-zinc-500">Combustible: {unit.fuel}</p>
-                        </td>
-                        <td className="py-3 pr-3">
-                          <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-700">{unit.status}</span>
-                        </td>
-                        <td className="py-3 pr-3">{unit.nextService}</td>
-                        <td className="py-3">
-                          <span
-                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                              unit.risk === "Alto"
-                                ? "bg-rose-100 text-rose-700"
-                                : unit.risk === "Medio"
-                                  ? "bg-amber-100 text-amber-700"
-                                  : "bg-emerald-100 text-emerald-700"
-                            }`}
-                          >
-                            {unit.risk}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-
-            <article className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.32)]">
-              <div className="mb-4 flex items-center gap-2">
-                <Fuel className="h-5 w-5 text-sky-700" />
-                <div>
-                  <h3 className="font-semibold text-zinc-900">Agenda operativa inmediata</h3>
-                  <p className="text-sm text-zinc-500">Acciones sugeridas para sostener disponibilidad y contratos.</p>
-                </div>
-              </div>
-              <div className="space-y-3 text-sm text-zinc-700">
-                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="font-semibold text-zinc-900">Redistribución de respaldo</p>
-                  <p className="mt-1">Mover 2 unidades de reserva desde Mérida a Caracas para cubrir tickets de prioridad alta.</p>
-                </div>
-                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="font-semibold text-zinc-900">Cierre documental</p>
-                  <p className="mt-1">Regularizar pólizas y reconexión GPS de 4 unidades antes del próximo comité operativo.</p>
-                </div>
-                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="font-semibold text-zinc-900">Contención de costo técnico</p>
-                  <p className="mt-1">Negociar lote de repuestos de frenos y cauchos para reducir el gasto correctivo de marzo.</p>
-                </div>
-                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sky-900">
-                  <p className="font-semibold">Recomendación de dirección</p>
-                  <p className="mt-1">Mantener la disponibilidad global sobre 90% y cerrar todos los tickets críticos en las próximas 48 horas.</p>
-                </div>
-              </div>
-            </article>
-          </div>
-        </section>
+          </section>
         )}
 
         {activeSection === "contratos" && (
@@ -5952,12 +6352,6 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </section>
         )}
 
-        {activeSection === "gestion" && (
-        <section id="gestion-panel" className="w-full scroll-mt-24">
-          <RealTimeGestionCommandCenter />
-        </section>
-        )}
-
         {activeSection === "register-user" && (
         <section id="register-user-panel" className="space-y-4 scroll-mt-24">
           <article className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -5980,65 +6374,6 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
               >
                 Abrir modulo de registro de miembros
               </a>
-            </div>
-          </article>
-        </section>
-        )}
-
-        {activeSection === "resumen" && (
-        <section id="flota" className="mt-4 grid gap-4 lg:grid-cols-2 scroll-mt-24">
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Truck className="h-4 w-4 text-zinc-700" />
-              <h2 className="font-semibold text-zinc-900">Estado de flota por zona</h2>
-            </div>
-            <div className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={fleetData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e4e4e7" />
-                  <XAxis dataKey="zone" axisLine={false} tickLine={false} stroke="#71717a" />
-                  <YAxis axisLine={false} tickLine={false} stroke="#71717a" />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#ffffff",
-                      borderRadius: "12px",
-                      border: "1px solid #e4e4e7",
-                      color: "#18181b",
-                    }}
-                  />
-                  <Bar dataKey="operativas" fill="#0ea5e9" radius={[4, 4, 0, 0]} name="Operativas" />
-                  <Bar dataKey="taller" fill="#f97316" radius={[4, 4, 0, 0]} name="Taller" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                <p className="text-zinc-500">Productividad</p>
-                <p className="mt-1 text-xl font-semibold text-zinc-900">91.4%</p>
-              </div>
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                <p className="text-zinc-500">SLA soporte</p>
-                <p className="mt-1 text-xl font-semibold text-zinc-900">97.2%</p>
-              </div>
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                <p className="text-zinc-500">Riesgo cartera</p>
-                <p className="mt-1 text-xl font-semibold text-rose-600">8.6%</p>
-              </div>
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                <p className="text-zinc-500">Clientes activos</p>
-                <p className="mt-1 text-xl font-semibold text-zinc-900">1,284</p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
-              <div className="mb-2 flex items-center gap-2 font-semibold text-zinc-900">
-                <Activity className="h-4 w-4" /> Monitoreo en tiempo real
-              </div>
-              <p>Motor de riesgo ejecutando evaluación de cartera en 3 regiones.</p>
-              <p className="mt-1">Último corte: {clockTimeText}</p>
             </div>
           </article>
         </section>
@@ -6095,31 +6430,6 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </section>
         )}
 
-        {activeSection === "resumen" && (
-        <section id="gestion" className="mt-4 grid gap-4 md:grid-cols-3 scroll-mt-24">
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-2 flex items-center gap-2 text-zinc-700">
-              <Gauge className="h-4 w-4" />
-              <p className="font-semibold">Control de calidad</p>
-            </div>
-            <p className="text-sm text-zinc-600">Auditoría interna con cumplimiento operativo del 98.1%.</p>
-          </article>
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-2 flex items-center gap-2 text-zinc-700">
-              <BriefcaseBusiness className="h-4 w-4" />
-              <p className="font-semibold">Dirección comercial</p>
-            </div>
-            <p className="text-sm text-zinc-600">Pipeline empresarial activo con 24 negociaciones en curso.</p>
-          </article>
-          <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-            <div className="mb-2 flex items-center gap-2 text-zinc-700">
-              <Landmark className="h-4 w-4" />
-              <p className="font-semibold">Tesorería</p>
-            </div>
-            <p className="text-sm text-zinc-600">Flujo de caja positivo y cobertura proyectada para 90 días.</p>
-          </article>
-        </section>
-        )}
           </div>
         </main>
       </div>

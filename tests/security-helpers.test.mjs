@@ -9,9 +9,11 @@ test("normalizeMemberUsername normaliza espacios, case y arroba", () => {
 });
 
 test("isBcryptHash valida prefijos bcrypt permitidos", () => {
-  assert.equal(isBcryptHash("$2b$12$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcd"), true);
-  assert.equal(isBcryptHash("$2a$10$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcd"), true);
-  assert.equal(isBcryptHash("$2y$08$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcd"), true);
+  // Un hash bcrypt real tiene 60 caracteres: $2x$CC$ + 53 caracteres de cuerpo (salt + digest).
+  assert.equal(isBcryptHash("$2b$12$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcdefghi"), true);
+  assert.equal(isBcryptHash("$2a$10$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcdefghi"), true);
+  assert.equal(isBcryptHash("$2y$08$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcdefghi"), true);
+  assert.equal(isBcryptHash("$2b$12$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcd"), false);
   assert.equal(isBcryptHash("$1$bad-format"), false);
   assert.equal(isBcryptHash(""), false);
 });

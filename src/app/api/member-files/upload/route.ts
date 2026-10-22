@@ -1,8 +1,14 @@
 import { randomUUID } from "crypto";
-import { mkdir, unlink, writeFile } from "fs/promises";
-import path from "path";
 import { NextResponse } from "next/server";
-import sharp from "sharp";
+import {
+  buildAssetKey,
+  buildDerivedPdfKey,
+  MAX_ASSET_UPLOAD_BYTES,
+  sanitizeAssetSegment,
+  sanitizeCedulaDigits,
+  validateAssetUpload,
+} from "@/lib/asset-paths.mjs";
+import { deleteAssetObject, saveAssetObject } from "@/lib/asset-storage";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/session";
 
@@ -11,12 +17,24 @@ export const runtime = "nodejs";
 type AssetType = "DOCUMENT" | "CONTRACT";
 type AssetVariant = "NORMAL" | "SCANNED";
 
+/**
+ * `sharp` es un modulo nativo: no existe en Cloudflare Workers. Se carga de
+ * forma perezosa para que la ruta pueda subir el archivo aunque el procesado
+ * de imagen no este disponible en el entorno.
+ */
+type SharpFactory = typeof import("sharp");
+
+async function loadSharp(): Promise<SharpFactory> {
+  const module = await import("sharp");
+  return module.default;
+}
+
 function sanitizeSegment(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitizeAssetSegment(value);
 }
 
 function sanitizeCedula(value: string) {
-  return value.replace(/[^0-9]/g, "");
+  return sanitizeCedulaDigits(value);
 }
 
 function ensureAllowed(assetType: string, variant: string) {
@@ -320,6 +338,7 @@ function scoreFacialBandsAndSymmetry(candidate: CandidateRect, ctx: DetectionCon
 }
 
 async function detectFaceCropFromCedula(sourceBytes: Buffer): Promise<CropRect | null> {
+  const sharp = await loadSharp();
   const normalized = sharp(sourceBytes).rotate();
   const metadata = await normalized.metadata();
 
@@ -412,6 +431,8 @@ async function tryBuildAutoSelfie(sourceBytes: Buffer) {
   const crop = await detectFaceCropFromCedula(sourceBytes);
   if (!crop) return null;
 
+  const sharp = await loadSharp();
+
   return sharp(sourceBytes)
     .rotate()
     .extract(crop)
@@ -445,16 +466,41 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: "Parametros de carga incompletos o invalidos." }, { status: 400 });
   }
 
-  const ext = path.extname(file.name || "").toLowerCase() || ".bin";
-  const safeName = `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`;
-  const relativeDir = path.join("uploads", "members", cedula, assetType.toLowerCase(), documentKey, variant.toLowerCase());
-  const absoluteDir = path.join(process.cwd(), "public", relativeDir);
-  const absolutePath = path.join(absoluteDir, safeName);
+  // Blindaje: solo imagenes/PDF dentro del tamano permitido.
+  const validation = validateAssetUpload({ fileName: file.name, mimeType: file.type, size: file.size });
 
-  await mkdir(absoluteDir, { recursive: true });
+  if (!validation.ok) {
+    return NextResponse.json({ ok: false, message: validation.message }, { status: 400 });
+  }
 
   const bytes = Buffer.from(await file.arrayBuffer());
-  await writeFile(absolutePath, bytes);
+  let fileKey: string;
+
+  try {
+    fileKey = await saveAssetObject(
+      buildAssetKey({
+        cedula,
+        assetType,
+        documentKey,
+        variant,
+        fileName: file.name || "",
+        token: randomUUID().slice(0, 8),
+      }),
+      bytes,
+      file.type || "application/octet-stream",
+    );
+  } catch (error) {
+    // El almacenamiento tambien valida tipo/tamano: se responde claro, sin 500.
+    console.error("member-files/upload storage error", error);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        message: "No se pudo guardar el archivo. Verifica el formato y el tamaño (máximo 20 MB).",
+      },
+      { status: 400 },
+    );
+  }
 
   const profile = await prisma.memberProfile.upsert({
     where: { cedula },
@@ -462,7 +508,19 @@ export async function POST(request: Request) {
     update: {},
   });
 
-  const filePath = `/${path.join(relativeDir, safeName).replace(/\\/g, "/")}`;
+  // Al reemplazar un archivo hay que borrar el anterior para no dejar huerfanos
+  // en el almacenamiento (antes solo se sobreescribia la ruta en la BD).
+  const previousAsset = await prisma.memberAsset.findUnique({
+    where: {
+      profileId_assetType_documentKey_variant: {
+        profileId: profile.id,
+        assetType,
+        documentKey,
+        variant,
+      },
+    },
+    select: { filePath: true },
+  });
 
   const asset = await prisma.memberAsset.upsert({
     where: {
@@ -478,18 +536,37 @@ export async function POST(request: Request) {
       assetType,
       documentKey,
       variant,
-      filePath,
-      fileName: file.name || safeName,
+      filePath: fileKey,
+      fileName: file.name || fileKey.split("/").pop() || fileKey,
       mimeType: file.type || "application/octet-stream",
       size: bytes.length,
     },
     update: {
-      filePath,
-      fileName: file.name || safeName,
+      filePath: fileKey,
+      fileName: file.name || fileKey.split("/").pop() || fileKey,
       mimeType: file.type || "application/octet-stream",
       size: bytes.length,
     },
   });
+
+  if (previousAsset?.filePath && previousAsset.filePath !== fileKey) {
+    await deleteAssetObject(previousAsset.filePath);
+    await deleteAssetObject(buildDerivedPdfKey(previousAsset.filePath));
+  }
+
+  // El navegador escanea el documento y puede enviar ya el PDF digital generado.
+  const pdfPart = form.get("pdf");
+  let pdfKey: string | null = null;
+
+  if (variant === "SCANNED" && pdfPart instanceof File && pdfPart.size > 0) {
+    const pdfBytes = Buffer.from(await pdfPart.arrayBuffer());
+
+    if (pdfBytes.length > MAX_ASSET_UPLOAD_BYTES) {
+      return NextResponse.json({ ok: false, message: "El PDF digital supera el tamaño permitido." }, { status: 400 });
+    }
+
+    pdfKey = await saveAssetObject(buildDerivedPdfKey(fileKey), pdfBytes, "application/pdf");
+  }
 
   let autoSelfie:
     | {
@@ -499,22 +576,41 @@ export async function POST(request: Request) {
       }
     | undefined;
 
-  const shouldAttemptAutoSelfie = assetType === "DOCUMENT" && documentKey === "identidad" && variant === "NORMAL" && isImageFile(file.name || safeName, file.type);
+  const shouldAttemptAutoSelfie =
+    assetType === "DOCUMENT" &&
+    documentKey === "identidad" &&
+    variant === "NORMAL" &&
+    isImageFile(file.name || fileKey, file.type);
 
   if (shouldAttemptAutoSelfie) {
     try {
       const selfieBytes = await tryBuildAutoSelfie(bytes);
 
       if (selfieBytes) {
-        const selfieSafeName = `${Date.now()}-selfie-${randomUUID().slice(0, 8)}.jpg`;
-        const selfieRelativeDir = path.join("uploads", "members", cedula, "document", "selfie", "normal");
-        const selfieAbsoluteDir = path.join(process.cwd(), "public", selfieRelativeDir);
-        const selfieAbsolutePath = path.join(selfieAbsoluteDir, selfieSafeName);
+        const selfieFilePath = await saveAssetObject(
+          buildAssetKey({
+            cedula,
+            assetType: "DOCUMENT",
+            documentKey: "selfie",
+            variant: "NORMAL",
+            fileName: "selfie-extraida-cedula.jpg",
+            token: randomUUID().slice(0, 8),
+          }),
+          selfieBytes,
+          "image/jpeg",
+        );
 
-        await mkdir(selfieAbsoluteDir, { recursive: true });
-        await writeFile(selfieAbsolutePath, selfieBytes);
-
-        const selfieFilePath = `/${path.join(selfieRelativeDir, selfieSafeName).replace(/\\/g, "/")}`;
+        const previousSelfie = await prisma.memberAsset.findUnique({
+          where: {
+            profileId_assetType_documentKey_variant: {
+              profileId: profile.id,
+              assetType: "DOCUMENT",
+              documentKey: "selfie",
+              variant: "NORMAL",
+            },
+          },
+          select: { filePath: true },
+        });
 
         const selfieAsset = await prisma.memberAsset.upsert({
           where: {
@@ -548,6 +644,11 @@ export async function POST(request: Request) {
           filePath: selfieAsset.filePath,
           mimeType: selfieAsset.mimeType || "image/jpeg",
         };
+
+        if (previousSelfie?.filePath && previousSelfie.filePath !== selfieFilePath) {
+          await deleteAssetObject(previousSelfie.filePath);
+          await deleteAssetObject(buildDerivedPdfKey(previousSelfie.filePath));
+        }
       }
     } catch {
       // Keep upload successful even if auto selfie extraction is not possible for this image.
@@ -559,6 +660,7 @@ export async function POST(request: Request) {
     message: `${assetType} ${documentKey} ${variant.toLowerCase()} cargado correctamente.`,
     asset,
     autoSelfie,
+    pdfPath: pdfKey,
   });
 }
 
@@ -615,16 +717,23 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ ok: true, message: "El archivo ya no estaba registrado." });
   }
 
-  await prisma.memberAsset.delete({ where: { id: existing.id } });
+  // Primero se retira el archivo del almacenamiento (a la papelera, recuperable).
+  // Solo si eso funciona se borra la fila: asi la base de datos nunca queda
+  // apuntando a un archivo que sigue ahi, ni se pierde la referencia si falla.
+  const movedToTrash = await deleteAssetObject(existing.filePath);
+  await deleteAssetObject(buildDerivedPdfKey(existing.filePath));
 
-  if (existing.filePath?.startsWith("/")) {
-    const absolutePath = path.join(process.cwd(), "public", existing.filePath.replace(/^\/+/, "").replace(/\//g, path.sep));
-    try {
-      await unlink(absolutePath);
-    } catch {
-      // It is safe to ignore if the physical file does not exist anymore.
-    }
+  if (!movedToTrash) {
+    return NextResponse.json(
+      {
+        ok: false,
+        message: "No se pudo retirar el archivo del almacenamiento. Intenta de nuevo.",
+      },
+      { status: 502 },
+    );
   }
+
+  await prisma.memberAsset.delete({ where: { id: existing.id } });
 
   return NextResponse.json({
     ok: true,

@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
+import { encryptMemberKey } from "@/lib/member-credentials.mjs";
 import { prisma } from "@/lib/prisma";
 import { getMotoBySlug } from "@/data/motos";
 import { getSessionUser } from "@/lib/session";
@@ -15,11 +16,19 @@ type RegisterMemberPayload = {
   empresa?: string;
   operationalGroup?: string;
   references?: string;
+  ubicacionLat?: number;
+  ubicacionLng?: number;
+  referenciaLat?: number;
+  referenciaLng?: number;
+  referencia2Lat?: number;
+  referencia2Lng?: number;
   motoSlug?: string;
   omitCertificateOrigin?: boolean;
+  omitLicencia?: boolean;
   contractType?: string;
   planName?: string;
   termMonths?: number;
+  installmentCount?: number;
   monthlyAmount?: number;
   contractStartDate?: string;
   paymentMethod?: string;
@@ -52,6 +61,14 @@ function buildExpectedUsername(nombre: string, apellido: string) {
   return `@${slugifyUsernamePart(nombre)}-${slugifyUsernamePart(apellido)}`.replace(/-+/g, "-");
 }
 
+/** Convierte un valor de coordenada a número válido; devuelve NaN si no aplica. */
+function parseCoordinate(value: unknown) {
+  if (value === undefined || value === null || value === "") return Number.NaN;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 export async function POST(request: Request) {
   try {
     const sessionUser = await getSessionUser();
@@ -76,11 +93,22 @@ export async function POST(request: Request) {
   const empresa = body.empresa?.trim() ?? "";
   const operationalGroup = body.operationalGroup?.trim() ?? "";
   const references = body.references?.trim() ?? "";
+  const ubicacionLat = parseCoordinate(body.ubicacionLat);
+  const ubicacionLng = parseCoordinate(body.ubicacionLng);
+  const referenciaLat = parseCoordinate(body.referenciaLat);
+  const referenciaLng = parseCoordinate(body.referenciaLng);
+  const referencia2Lat = parseCoordinate(body.referencia2Lat);
+  const referencia2Lng = parseCoordinate(body.referencia2Lng);
+  const hasUbicacion = Number.isFinite(ubicacionLat) && Number.isFinite(ubicacionLng);
+  const hasReferencia = Number.isFinite(referenciaLat) && Number.isFinite(referenciaLng);
+  const hasReferencia2 = Number.isFinite(referencia2Lat) && Number.isFinite(referencia2Lng);
   const motoSlug = body.motoSlug?.trim() ?? "";
   const omitCertificateOrigin = body.omitCertificateOrigin === true;
+  const omitLicencia = body.omitLicencia === true;
   const contractType = body.contractType?.trim() ?? "";
   const planName = body.planName?.trim() ?? "";
   const termMonths = Number(body.termMonths ?? 0);
+  const installmentCount = Math.max(0, Math.round(Number(body.installmentCount ?? 0)));
   const monthlyAmount = Number(body.monthlyAmount ?? 0);
   const contractStartDate = body.contractStartDate?.trim() ?? "";
   const paymentMethod = body.paymentMethod?.trim() ?? "";
@@ -188,9 +216,16 @@ export async function POST(request: Request) {
     { assetType: "DOCUMENT", documentKey: "certificado-origen", variant: "SCANNED" },
   ] as const;
 
-  const requiredAssets = omitCertificateOrigin
-    ? baseRequiredAssets
-    : [...baseRequiredAssets, ...certificateAssets];
+  const licenciaAssets = [
+    { assetType: "DOCUMENT", documentKey: "licencia", variant: "NORMAL" },
+    { assetType: "DOCUMENT", documentKey: "licencia", variant: "SCANNED" },
+  ] as const;
+
+  const requiredAssets = [
+    ...baseRequiredAssets,
+    ...(omitLicencia ? [] : licenciaAssets),
+    ...(omitCertificateOrigin ? [] : certificateAssets),
+  ];
 
   const profile = await prisma.memberProfile.findUnique({
     where: { cedula },
@@ -206,7 +241,7 @@ export async function POST(request: Request) {
 
   const missing = requiredAssets.filter((requiredAsset) => {
     return !profile.assets.some(
-      (asset) =>
+      (asset: any) =>
         asset.assetType === requiredAsset.assetType &&
         asset.documentKey === requiredAsset.documentKey &&
         asset.variant === requiredAsset.variant,
@@ -233,6 +268,10 @@ export async function POST(request: Request) {
 
   const passwordHash = await bcrypt.hash(encryptedKey, 12);
 
+  // La clave también queda en el expediente, cifrada y de forma reversible,
+  // para que el administrador pueda consultarla al buscar al miembro.
+  const memberKeyCipher = await encryptMemberKey(encryptedKey, process.env.AUTH_SECRET ?? "");
+
   const createdUser = await prisma.user.create({
     data: {
       nombre,
@@ -257,7 +296,24 @@ export async function POST(request: Request) {
       empresa,
       operationalGroup,
       references,
+      ubicacionLat: hasUbicacion ? ubicacionLat : null,
+      ubicacionLng: hasUbicacion ? ubicacionLng : null,
+      ubicacionLink: hasUbicacion
+        ? `https://www.google.com/maps?q=${ubicacionLat.toFixed(6)},${ubicacionLng.toFixed(6)}`
+        : null,
+      referenciaLat: hasReferencia ? referenciaLat : null,
+      referenciaLng: hasReferencia ? referenciaLng : null,
+      referenciaLink: hasReferencia
+        ? `https://www.google.com/maps?q=${referenciaLat.toFixed(6)},${referenciaLng.toFixed(6)}`
+        : null,
+      referencia2Lat: hasReferencia2 ? referencia2Lat : null,
+      referencia2Lng: hasReferencia2 ? referencia2Lng : null,
+      referencia2Link: hasReferencia2
+        ? `https://www.google.com/maps?q=${referencia2Lat.toFixed(6)},${referencia2Lng.toFixed(6)}`
+        : null,
       username: expectedUsername,
+      memberKeyCipher,
+      memberKeyIssuedAt: memberKeyCipher ? new Date() : null,
       motoSlug: selectedMoto.slug,
       motoMarca,
       motoModelo,
@@ -266,6 +322,7 @@ export async function POST(request: Request) {
       contractType,
       planName,
       termMonths,
+      installmentCount: installmentCount > 0 ? installmentCount : null,
       monthlyAmount,
       contractStartDate,
       paymentMethod: payLater ? "Pagar después" : paymentMethod,

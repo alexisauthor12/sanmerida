@@ -5,5 +5,7 @@ export function normalizeMemberUsername(value) {
 }
 
 export function isBcryptHash(value) {
-  return /^\$2[aby]\$/.test(String(value ?? "").trim());
+  return /^\$2[aby]\$(0[4-9]|[12]\d|3[01])\$[./A-Za-z0-9]{53}$/.test(
+    String(value ?? "").trim(),
+  );
 }

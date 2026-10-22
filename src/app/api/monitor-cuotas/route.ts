@@ -1,5 +1,13 @@
+import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { buildAssetUrl } from "@/lib/asset-paths.mjs";
+import {
+  decryptMemberKey,
+  encryptMemberKey,
+  generateMemberKey,
+  isMemberKey,
+} from "@/lib/member-credentials.mjs";
 import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/session";
@@ -53,6 +61,12 @@ type MonitorProfile = {
   nombre: string;
   apellido: string;
   username: string;
+  credenciales: {
+    usuario: string;
+    clave: string;
+    disponible: boolean;
+    emitidaEn: string;
+  };
   fotoPersona: string;
   fotoCedula: string;
   fotoRif: string;
@@ -60,6 +74,14 @@ type MonitorProfile = {
   ocupacion: string;
   empresa: string;
   references: string;
+  ubicacionLink: string;
+  referenciaLink: string;
+  ubicacionLat: number | null;
+  ubicacionLng: number | null;
+  referenciaLat: number | null;
+  referenciaLng: number | null;
+  referencia2Lat: number | null;
+  referencia2Lng: number | null;
   fechaIngreso: string;
   motoMarca: string;
   motoModelo: string;
@@ -105,7 +127,8 @@ type RegisterPaymentPayload = {
   bank?: string;
   method?: string;
   note?: string;
-  kind?: "installment" | "advance";
+  kind?: "installment" | "advance" | "credentials";
+  memberKey?: string;
 };
 
 type LocalPaymentRecord = {
@@ -216,7 +239,16 @@ function normalizeMoney(value: number) {
   return Number(value.toFixed(2));
 }
 
-function resolveInstallmentTotal(planName: string | null | undefined, termMonths: number | null | undefined) {
+function resolveInstallmentTotal(
+  planName: string | null | undefined,
+  termMonths: number | null | undefined,
+  installmentCount?: number | null,
+) {
+  // El plan de financiamiento guarda su nº exacto de cuotas (viene del modelo).
+  if (installmentCount && installmentCount > 0) {
+    return installmentCount;
+  }
+
   const normalizedPlan = String(planName ?? "").toLowerCase();
   if (normalizedPlan.includes("83")) {
     return 83;
@@ -236,6 +268,11 @@ function parseDateInput(value?: string | null) {
   return parsed;
 }
 
+/**
+ * Resuelve la URL protegida del archivo de un expediente. Los documentos ya no
+ * se sirven como estaticos de `public/uploads`: `buildAssetUrl` los envia al
+ * endpoint autenticado `/api/member-files/file`.
+ */
 function findAssetPath(
   assets: Array<{ assetType: "DOCUMENT" | "CONTRACT"; documentKey: string; variant: "NORMAL" | "SCANNED"; filePath: string }>,
   assetType: "DOCUMENT" | "CONTRACT",
@@ -244,11 +281,49 @@ function findAssetPath(
 ) {
   const secondaryVariant = preferredVariant === "SCANNED" ? "NORMAL" : "SCANNED";
 
-  return (
+  const filePath =
     assets.find((item) => item.assetType === assetType && item.documentKey === documentKey && item.variant === preferredVariant)?.filePath ||
-    assets.find((item) => item.assetType === assetType && item.documentKey === documentKey && item.variant === secondaryVariant)?.filePath ||
-    FALLBACK_IMAGE
-  );
+    assets.find((item) => item.assetType === assetType && item.documentKey === documentKey && item.variant === secondaryVariant)?.filePath;
+
+  return filePath ? buildAssetUrl(filePath) : FALLBACK_IMAGE;
+}
+
+/**
+ * Días entre cuotas según el plan:
+ *  - Plan de 83 cuotas ("Ciclón") => SEMANAL (7 días)
+ *  - Plan de 26 cuotas            => QUINCENAL (15 días)
+ */
+/**
+ * Dias entre cuotas segun el plan:
+ *  - Plan de 83 cuotas ("Ciclon")  => SEMANAL (7 dias)
+ *  - Financiamiento 50% y 26 cuotas => QUINCENAL (15 dias)
+ */
+function resolveIntervalDays(planName: string | null | undefined, total: number) {
+  const normalizedPlan = String(planName ?? "").toLowerCase();
+
+  if (normalizedPlan.includes("financ")) {
+    return 15;
+  }
+
+  if (total >= 83 || normalizedPlan.includes("83") || normalizedPlan.includes("cicl")) {
+    return 7;
+  }
+
+  return 15;
+}
+
+/** Suma los pagos por número de cuota (permite pagos parciales). */
+function buildPaidAmountMap(payments: Array<{ installmentNumber: number; amount: number }>) {
+  const map = new Map<number, number>();
+
+  for (const payment of payments) {
+    map.set(
+      payment.installmentNumber,
+      normalizeMoney((map.get(payment.installmentNumber) ?? 0) + payment.amount),
+    );
+  }
+
+  return map;
 }
 
 function buildInstallments(params: {
@@ -256,16 +331,19 @@ function buildInstallments(params: {
   cuotaMensual: number;
   total: number;
   startDate: Date;
-  paidInstallmentNumbers: Set<number>;
+  intervalDays: number;
+  paidAmountByNumber: Map<number, number>;
 }) {
   const now = new Date();
 
   return Array.from({ length: params.total }, (_, index) => {
     const numero = index + 1;
-    const dueDate = addDays(params.startDate, index * 15);
+    const dueDate = addDays(params.startDate, index * params.intervalDays);
     const dueTs = dueDate.getTime();
     const nowTs = now.getTime();
-    const isPaid = params.paidInstallmentNumbers.has(numero);
+    const paidAmount = params.paidAmountByNumber.get(numero) ?? 0;
+    // Solo es "Pagada" cuando el monto cubre la cuota completa (soporta pagos parciales).
+    const isPaid = paidAmount + 0.01 >= params.cuotaMensual;
 
     let estado: "Pendiente" | "Vencida" | "Por vencer" | "Pagada" = "Pendiente";
 
@@ -295,7 +373,8 @@ function buildInstallments(params: {
   });
 }
 
-function mapProfile(profile: {
+async function mapProfile(
+  profile: {
   id: string;
   cedula: string;
   nombre: string | null;
@@ -305,6 +384,8 @@ function mapProfile(profile: {
   ocupacion: string | null;
   empresa: string | null;
   username: string | null;
+  memberKeyCipher: string | null;
+  memberKeyIssuedAt: Date | null;
   operationalGroup: string | null;
   motoSlug: string | null;
   motoMarca: string | null;
@@ -316,8 +397,17 @@ function mapProfile(profile: {
   contractStartDate: string | null;
   paymentDate: string | null;
   references: string | null;
+  ubicacionLink: string | null;
+  referenciaLink: string | null;
+  ubicacionLat: number | null;
+  ubicacionLng: number | null;
+  referenciaLat: number | null;
+  referenciaLng: number | null;
+  referencia2Lat: number | null;
+  referencia2Lng: number | null;
   monthlyAmount: number | null;
   termMonths: number | null;
+  installmentCount: number | null;
   createdAt: Date;
   updatedAt: Date;
   installmentPayments: Array<{
@@ -350,39 +440,46 @@ function mapProfile(profile: {
     fileName: string;
     createdAt: Date;
   }>;
-}) {
+  },
+  options: { includeCredentials?: boolean } = {},
+) {
   const clientId = `mp-${profile.id}`;
+  // La clave del miembro solo se descifra para consultas administrativas.
+  const memberKey = options.includeCredentials
+    ? await decryptMemberKey(profile.memberKeyCipher, process.env.AUTH_SECRET ?? "")
+    : null;
   const fullName = `${profile.nombre ?? ""} ${profile.apellido ?? ""}`.trim() || `Cliente ${profile.cedula}`;
   const cuotaMensual = Number(profile.monthlyAmount ?? 55);
-  const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths);
+  const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths, profile.installmentCount);
 
-  const paidInstallmentNumbers = new Set(
+  const paidAmountByNumber = buildPaidAmountMap(
     profile.installmentPayments
-      .map((payment) => payment.installmentNumber)
-      .filter((number) => number > 0 && number <= cuotasTotales),
+      .filter((payment) => payment.installmentNumber > 0 && payment.installmentNumber <= cuotasTotales)
+      .map((payment) => ({ installmentNumber: payment.installmentNumber, amount: payment.amount })),
   );
 
-  const cuotasPagadas = paidInstallmentNumbers.size;
   const startDate = parseIsoOrNow(profile.contractStartDate ?? profile.createdAt.toISOString());
   const installments = buildInstallments({
     clientId,
     cuotaMensual,
     total: cuotasTotales,
     startDate,
-    paidInstallmentNumbers,
+    intervalDays: resolveIntervalDays(profile.planName, cuotasTotales),
+    paidAmountByNumber,
   });
+
+  const cuotasPagadas = installments.filter((item) => item.estado === "Pagada").length;
 
   const totalAbonado = normalizeMoney(profile.advancePayments.reduce((acc, item) => acc + item.amount, 0));
   const totalPagadoCuotas = normalizeMoney(profile.installmentPayments.reduce((acc, item) => acc + item.amount, 0));
 
   const cuotasVencidas = installments.filter((item) => item.estado === "Vencida").length;
   const cuotasPendientes = installments.filter((item) => item.estado !== "Pagada").length;
-  const deudaBase = normalizeMoney(
-    Number(profile.motoUnitPrice ?? 0) > 0
-      ? Number(profile.motoUnitPrice)
-      : cuotaMensual * cuotasTotales
+  // El "saldo que debe" = total del plan (contrato) - pagos de cuotas - abonos.
+  const deudaPlan = normalizeMoney(
+    installments.reduce((acc, item) => acc + item.monto + item.recargo, 0),
   );
-  const saldoConAbonos = Math.max(0, normalizeMoney(deudaBase - totalPagadoCuotas - totalAbonado));
+  const saldoConAbonos = Math.max(0, normalizeMoney(deudaPlan - totalPagadoCuotas - totalAbonado));
 
   const nextDue = installments.find((item) => item.estado !== "Pagada")?.vence ?? "—";
   const estado: MonitorClient["estado"] = cuotasVencidas >= 3 ? "Riesgo" : cuotasVencidas > 0 ? "Con atraso" : "Al día";
@@ -394,7 +491,7 @@ function mapProfile(profile: {
       nombre: `Documento ${asset.documentKey}`,
       tipo: asset.documentKey === "rif" ? "Tributario" : asset.documentKey === "identidad" ? "Identificación" : "Soporte",
       fecha: toDmy(asset.createdAt),
-      archivo: asset.filePath,
+      archivo: buildAssetUrl(asset.filePath),
     }));
 
   const contracts: MonitorContract[] = profile.assets
@@ -405,7 +502,7 @@ function mapProfile(profile: {
       fecha: toDmy(profile.contractStartDate || profile.updatedAt),
       monto: cuotaMensual * cuotasTotales,
       estado: "Vigente",
-      archivo: asset.filePath,
+      archivo: buildAssetUrl(asset.filePath),
     }));
 
   const monitorClient: MonitorClient = {
@@ -428,6 +525,12 @@ function mapProfile(profile: {
     nombre: profile.nombre || "No registrado",
     apellido: profile.apellido || "No registrado",
     username: profile.username || "No registrado",
+    credenciales: {
+      usuario: profile.username || "No registrado",
+      clave: memberKey || "",
+      disponible: Boolean(memberKey),
+      emitidaEn: profile.memberKeyIssuedAt ? toDmy(profile.memberKeyIssuedAt) : "No registrada",
+    },
     fotoPersona: findAssetPath(profile.assets, "DOCUMENT", "selfie", "NORMAL"),
     fotoCedula: findAssetPath(profile.assets, "DOCUMENT", "identidad", "NORMAL"),
     fotoRif: findAssetPath(profile.assets, "DOCUMENT", "rif", "NORMAL"),
@@ -435,6 +538,14 @@ function mapProfile(profile: {
     ocupacion: profile.ocupacion || "No registrado",
     empresa: profile.empresa || "No registrado",
     references: profile.references || "No registradas",
+    ubicacionLink: profile.ubicacionLink || "",
+    referenciaLink: profile.referenciaLink || "",
+    ubicacionLat: profile.ubicacionLat ?? null,
+    ubicacionLng: profile.ubicacionLng ?? null,
+    referenciaLat: profile.referenciaLat ?? null,
+    referenciaLng: profile.referenciaLng ?? null,
+    referencia2Lat: profile.referencia2Lat ?? null,
+    referencia2Lng: profile.referencia2Lng ?? null,
     fechaIngreso: toDmy(profile.createdAt),
     motoMarca: profile.motoMarca || "Por asignar",
     motoModelo: profile.motoModelo || "Por asignar",
@@ -502,6 +613,8 @@ async function ensureMonitorAccess() {
     return NextResponse.json({ ok: false, message: "Debes validar licencia administrativa para continuar." }, { status: 403 });
   }
 
+  let adminVerified = false;
+
   if (adminToken) {
     try {
       const adminAccess = await verifyAdminAccessToken(adminToken);
@@ -513,12 +626,17 @@ async function ensureMonitorAccess() {
       if (!hasAdminAccess) {
         return NextResponse.json({ ok: false, message: "Acceso administrativo inválido o expirado." }, { status: 403 });
       }
+
+      adminVerified = true;
     } catch {
       return NextResponse.json({ ok: false, message: "Acceso administrativo inválido o expirado." }, { status: 403 });
     }
   }
 
-  return { sessionUser };
+  // En desarrollo se conserva el acceso sin licencia (comportamiento previo),
+  // de modo que las credenciales se exponen con el mismo nivel de privilegio
+  // que ya exige este endpoint.
+  return { sessionUser, adminVerified: adminVerified || !isProduction };
 }
 
 export async function GET(request: Request) {
@@ -545,7 +663,7 @@ export async function GET(request: Request) {
         return NextResponse.json({ ok: true, found: false, message: "No existe expediente para esa cédula." });
       }
 
-      const mapped = mapProfile(profile);
+      const mapped = await mapProfile(profile, { includeCredentials: access.adminVerified });
       return NextResponse.json({
         ok: true,
         found: true,
@@ -567,10 +685,10 @@ export async function GET(request: Request) {
       take: 100,
     });
 
-    const mapped = profiles.map((profile) => mapProfile(profile));
-    const mappedClients = mapped.map((item) => item.client);
-    const mappedProfiles = Object.fromEntries(mapped.map((item) => [item.client.id, item.profile]));
-    const mappedInstallments = mapped.flatMap((item) => item.installments);
+    const mapped = await Promise.all(profiles.map((profile: any) => mapProfile(profile)));
+    const mappedClients = mapped.map((item: any) => item.client);
+    const mappedProfiles = Object.fromEntries(mapped.map((item: any) => [item.client.id, item.profile]));
+    const mappedInstallments = mapped.flatMap((item: any) => item.installments);
 
     return NextResponse.json({
       ok: true,
@@ -589,7 +707,7 @@ export async function POST(request: Request) {
     return access;
   }
 
-  let movementKind: "installment" | "advance" = "installment";
+  let movementKind: "installment" | "advance" | "credentials" = "installment";
   let fallbackPayload: {
     cedula: string;
     kind: "installment" | "advance";
@@ -607,6 +725,70 @@ export async function POST(request: Request) {
     const cedula = sanitizeCedula(body.cedula ?? "");
     const kind = body.kind ?? "installment";
     movementKind = kind;
+
+    // Gestión de credenciales del expediente: el administrador puede generar o
+    // rotar la clave SAN-MEMBER-XXXXXX del miembro. Queda guardada cifrada en el
+    // expediente y, si el miembro ya tiene cuenta, también actualiza su acceso.
+    if (kind === "credentials") {
+      if (!access.adminVerified) {
+        return NextResponse.json(
+          { ok: false, message: "Necesitas licencia administrativa para gestionar credenciales." },
+          { status: 403 },
+        );
+      }
+
+      if (!cedula) {
+        return NextResponse.json(
+          { ok: false, message: "Debes indicar la cédula del miembro." },
+          { status: 400 },
+        );
+      }
+
+      const profile = await prisma.memberProfile.findUnique({
+        where: { cedula },
+        select: { id: true, userId: true, username: true, nombre: true, apellido: true },
+      });
+
+      if (!profile) {
+        return NextResponse.json({ ok: false, message: "No existe expediente para esa cédula." }, { status: 404 });
+      }
+
+      const requestedKey = String(body.memberKey ?? "").trim().toUpperCase();
+      const memberKey = isMemberKey(requestedKey) ? requestedKey : generateMemberKey();
+      const memberKeyCipher = await encryptMemberKey(memberKey, process.env.AUTH_SECRET ?? "");
+
+      if (!memberKeyCipher) {
+        return NextResponse.json(
+          { ok: false, message: "No fue posible cifrar la credencial. Verifica AUTH_SECRET en el servidor." },
+          { status: 500 },
+        );
+      }
+
+      await prisma.memberProfile.update({
+        where: { id: profile.id },
+        data: { memberKeyCipher, memberKeyIssuedAt: new Date() },
+      });
+
+      if (profile.userId) {
+        await prisma.user.update({
+          where: { id: profile.userId },
+          data: { passwordHash: await bcrypt.hash(memberKey, 12) },
+        });
+      }
+
+      return NextResponse.json({
+        ok: true,
+        message: requestedKey
+          ? "Clave guardada en el expediente. El acceso del miembro no cambió."
+          : profile.userId
+            ? "Clave nueva generada y guardada en el expediente. El acceso del miembro quedó actualizado."
+            : "Clave guardada en el expediente. El miembro todavía no tiene cuenta de usuario vinculada.",
+        credentials: {
+          username: profile.username ?? "",
+          memberKey,
+        },
+      });
+    }
     const amount = Number(body.amount ?? 0);
     const reference = String(body.reference ?? "").trim();
     const bank = String(body.bank ?? "").trim();
@@ -652,26 +834,27 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, message: "El abono debe indicar una cuota objetivo válida." }, { status: 400 });
       }
 
-      const paidInstallmentNumbers = new Set(profile.installmentPayments.map((item) => item.installmentNumber));
+      const paidAmountByNumber = buildPaidAmountMap(profile.installmentPayments);
       const cuotaMensual = Number(profile.monthlyAmount ?? 75);
-      const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths);
+      const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths, profile.installmentCount);
       const startDate = parseIsoOrNow(profile.contractStartDate ?? profile.createdAt.toISOString());
       const installments = buildInstallments({
         clientId: `mp-${profile.id}`,
         cuotaMensual,
         total: cuotasTotales,
         startDate,
-        paidInstallmentNumbers,
+        intervalDays: resolveIntervalDays(profile.planName, cuotasTotales),
+        paidAmountByNumber,
       });
-      const targetInstallment = installments.find((item) => item.numero === installmentNumberForAdvance);
+      const targetInstallment = installments.find((item: any) => item.numero === installmentNumberForAdvance);
       if (!targetInstallment) {
         return NextResponse.json({ ok: false, message: "No existe esa cuota objetivo para el abono." }, { status: 400 });
       }
 
       const totalAbonadoCuota = normalizeMoney(
         profile.advancePayments
-          .filter((item) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumberForAdvance)
-          .reduce((acc, item) => acc + item.amount, 0)
+          .filter((item: any) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumberForAdvance)
+          .reduce((acc: any, item: any) => acc + item.amount, 0)
       );
       const installmentTotal = normalizeMoney(targetInstallment.monto + targetInstallment.recargo);
       const maxAdvance = calculateAdvanceMaxAmount({ installmentTotal, alreadyAdvanced: totalAbonadoCuota });
@@ -703,31 +886,32 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, message: "Indica el número de cuota a registrar." }, { status: 400 });
       }
 
-      const existingInstallmentPayment = profile.installmentPayments.find((item) => item.installmentNumber === installmentNumber);
+      const existingInstallmentPayment = profile.installmentPayments.find((item: any) => item.installmentNumber === installmentNumber);
       if (existingInstallmentPayment) {
         return NextResponse.json({ ok: false, message: `La cuota #${installmentNumber} ya tiene pago completo registrado.` }, { status: 400 });
       }
 
-      const paidInstallmentNumbers = new Set(profile.installmentPayments.map((item) => item.installmentNumber));
+      const paidAmountByNumber = buildPaidAmountMap(profile.installmentPayments);
       const cuotaMensual = Number(profile.monthlyAmount ?? 75);
-      const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths);
+      const cuotasTotales = resolveInstallmentTotal(profile.planName, profile.termMonths, profile.installmentCount);
       const startDate = parseIsoOrNow(profile.contractStartDate ?? profile.createdAt.toISOString());
       const installments = buildInstallments({
         clientId: `mp-${profile.id}`,
         cuotaMensual,
         total: cuotasTotales,
         startDate,
-        paidInstallmentNumbers,
+        intervalDays: resolveIntervalDays(profile.planName, cuotasTotales),
+        paidAmountByNumber,
       });
-      const targetInstallment = installments.find((item) => item.numero === installmentNumber);
+      const targetInstallment = installments.find((item: any) => item.numero === installmentNumber);
       if (!targetInstallment) {
         return NextResponse.json({ ok: false, message: "No existe esa cuota en el plan." }, { status: 400 });
       }
 
       const totalAbonadoCuota = normalizeMoney(
         profile.advancePayments
-          .filter((item) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumber)
-          .reduce((acc, item) => acc + item.amount, 0)
+          .filter((item: any) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumber)
+          .reduce((acc: any, item: any) => acc + item.amount, 0)
       );
       const montoCuota = normalizeMoney(targetInstallment.monto + targetInstallment.recargo);
       const restanteCuota = Math.max(0, normalizeMoney(montoCuota - totalAbonadoCuota));
@@ -790,7 +974,7 @@ export async function DELETE(request: Request) {
         return NextResponse.json({ ok: false, message: "No existe expediente para esa cédula." }, { status: 404 });
       }
 
-      const paymentRecord = profile.installmentPayments.find((item) => item.installmentNumber === installmentNumber);
+      const paymentRecord = profile.installmentPayments.find((item: any) => item.installmentNumber === installmentNumber);
       if (!paymentRecord) {
         return NextResponse.json({ ok: false, message: `La cuota #${installmentNumber} no tiene un pago registrado para revertir.` }, { status: 404 });
       }

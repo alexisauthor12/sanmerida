@@ -8,6 +8,12 @@ const API_BASE =
     ? ""
     : process.env.NEXT_PUBLIC_API_BASE || "";
 import { MOTOS } from "@/data/motos";
+import { buildAssetUrl } from "@/lib/asset-paths.mjs";
+import { scanModeForDocument } from "@/lib/document-scan.mjs";
+import { buildScannedPdf, detectFaceCropFromImage, fetchAssetBlob, scanImageBlob } from "@/lib/document-scanner";
+import { FINANCING_PLAN_NAME, computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
+import LocationField from "@/app/components/LocationField";
+import SavedLocationPreview from "@/app/components/SavedLocationPreview";
 
 type MemberOnboardingForm = {
   nombre: string;
@@ -20,12 +26,20 @@ type MemberOnboardingForm = {
   empresa: string;
   operationalGroup: string;
   references: string;
+  ubicacionLat: string;
+  ubicacionLng: string;
+  referenciaLat: string;
+  referenciaLng: string;
+  referencia2Lat: string;
+  referencia2Lng: string;
   motoSlug: string;
   motoUnitPrice: string;
   omitCertificateOrigin: boolean;
+  omitLicencia: boolean;
   contractType: string;
   planName: string;
   termMonths: string;
+  installmentCount: string;
   monthlyAmount: string;
   contractStartDate: string;
   paymentMethod: string;
@@ -75,12 +89,20 @@ const initialForm: MemberOnboardingForm = {
   empresa: "San Merida Sede Principal",
   operationalGroup: "Grupo 01",
   references: "",
+  ubicacionLat: "",
+  ubicacionLng: "",
+  referenciaLat: "",
+  referenciaLng: "",
+  referencia2Lat: "",
+  referencia2Lng: "",
   motoSlug: "",
   motoUnitPrice: "",
   omitCertificateOrigin: false,
+  omitLicencia: false,
   contractType: "Compraventa financiada",
   planName: "Plan de 26 cuotas",
   termMonths: "12",
+  installmentCount: "",
   monthlyAmount: "75",
   contractStartDate: "",
   paymentMethod: "Transferencia",
@@ -96,17 +118,46 @@ const initialForm: MemberOnboardingForm = {
 const documentDefinitions = [
   { key: "identidad", label: "Documento de identidad" },
   { key: "rif", label: "RIF" },
+  { key: "licencia", label: "Licencia de conducir" },
   { key: "certificado-origen", label: "Certificado de origen" },
   { key: "selfie", label: "Selfie de validacion" },
 ] as const;
+
+/**
+ * Documentos que el cliente puede no tener el día del registro:
+ * se pueden omitir por ahora y cargar después.
+ */
+type OmitFlag = "omitCertificateOrigin" | "omitLicencia";
+
+const OMITABLE_DOCUMENTS: Record<string, OmitFlag> = {
+  "certificado-origen": "omitCertificateOrigin",
+  licencia: "omitLicencia",
+};
 
 const contractDefinitions = [
   { key: "principal", label: "Contrato principal" },
 ] as const;
 
+// Configuracion de financiamiento por modelo de moto (viene del panel admin).
+type FinancingModel = {
+  slug: string;
+  nombre: string;
+  precioBase: number;
+  porcentajeInicial: number;
+  cuotasQuincenales: number;
+  montoCuota: number;
+  activo: boolean;
+  cuotaSugerida: number;
+  cuota: number;
+  inicial: number;
+  saldo: number;
+  meses: number;
+};
+
 const FINANCING_PLANS = [
   {
     id: "plan-26",
+    kind: "fixed",
     label: "26 Cuotas Cada 15 dias",
     planName: "Plan de 26 cuotas (cada 15 días)",
     termMonths: "12",
@@ -114,10 +165,21 @@ const FINANCING_PLANS = [
   },
   {
     id: "plan-83",
+    kind: "fixed",
     label: "83 Cuotas Cada 7 dias",
     planName: "Plan de 83 cuotas",
     termMonths: "12",
     monthlyAmount: "17",
+  },
+  {
+    // 50% inicial + cuotas quincenales: la duracion y el monto salen de la
+    // configuracion guardada por modelo de moto (panel admin).
+    id: "plan-financiamiento",
+    kind: "financing",
+    label: "Financiamiento 50% (quincenal)",
+    planName: FINANCING_PLAN_NAME,
+    termMonths: "12",
+    monthlyAmount: "",
   },
 ] as const;
 
@@ -156,13 +218,22 @@ function isImageAsset(asset?: AssetRecord) {
   return /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(asset.fileName || asset.filePath);
 }
 
+/** True cuando el archivo seleccionado ya es un PDF (no se puede escanear con canvas). */
+function isPdfFile(file: File) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
+/**
+ * URL del PDF digital derivado de un escaneo. `filePath` guarda la clave del
+ * archivo en el almacenamiento, por lo que se traduce con `buildAssetUrl`.
+ */
 function getPdfPath(asset?: AssetRecord) {
   if (!asset) return null;
-  if (asset.pdfPath) return asset.pdfPath;
-  if (/\.pdf$/i.test(asset.filePath)) return asset.filePath;
+  if (asset.pdfPath) return buildAssetUrl(asset.pdfPath);
+  if (/\.pdf$/i.test(asset.filePath)) return buildAssetUrl(asset.filePath);
   const extMatch = asset.filePath.match(/\.[^./]+$/);
-  if (!extMatch) return `${asset.filePath}.pdf`;
-  return `${asset.filePath.slice(0, -extMatch[0].length)}.pdf`;
+  if (!extMatch) return buildAssetUrl(`${asset.filePath}.pdf`);
+  return buildAssetUrl(`${asset.filePath.slice(0, -extMatch[0].length)}.pdf`);
 }
 
 export default function RegisterMemberPage() {
@@ -173,7 +244,11 @@ export default function RegisterMemberPage() {
   const [registrationCompleted, setRegistrationCompleted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [assets, setAssets] = useState<Record<string, AssetRecord>>({});
+  // Configuracion de financiamiento por modelo (precio, inicial, cuotas, monto).
+  const [financingBySlug, setFinancingBySlug] = useState<Record<string, FinancingModel>>({});
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  const [scanningKey, setScanningKey] = useState<string | null>(null);
+  const [pickLabels, setPickLabels] = useState<Record<string, string>>({});
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [hoveredBox, setHoveredBox] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(false);
@@ -182,6 +257,54 @@ export default function RegisterMemberPage() {
 
   const expectedUsername = useMemo(() => buildUsername(form.nombre, form.apellido), [form.nombre, form.apellido]);
   const selectedMoto = useMemo(() => MOTOS.find((moto) => moto.slug === form.motoSlug) ?? null, [form.motoSlug]);
+
+  // Resumen en vivo del financiamiento (usa lo que hay escrito en el formulario).
+  const selectedFinancing = useMemo(() => {
+    if (!isFinancingPlan(form.planName)) {
+      return null;
+    }
+
+    const config = financingBySlug[form.motoSlug];
+
+    if (!config) {
+      return null;
+    }
+
+    return computeFinancing({
+      precioBase: Number(form.motoUnitPrice || config.precioBase),
+      porcentajeInicial: config.porcentajeInicial,
+      cuotasQuincenales: Number(form.installmentCount || config.cuotasQuincenales),
+      montoCuota: Number(form.monthlyAmount || config.montoCuota),
+    });
+  }, [
+    financingBySlug,
+    form.installmentCount,
+    form.monthlyAmount,
+    form.motoSlug,
+    form.motoUnitPrice,
+    form.planName,
+  ]);
+  const clienteUbicacion = useMemo(
+    () =>
+      form.ubicacionLat && form.ubicacionLng
+        ? { lat: Number(form.ubicacionLat), lng: Number(form.ubicacionLng) }
+        : null,
+    [form.ubicacionLat, form.ubicacionLng]
+  );
+  const referenciaUbicacion = useMemo(
+    () =>
+      form.referenciaLat && form.referenciaLng
+        ? { lat: Number(form.referenciaLat), lng: Number(form.referenciaLng) }
+        : null,
+    [form.referenciaLat, form.referenciaLng]
+  );
+  const referencia2Ubicacion = useMemo(
+    () =>
+      form.referencia2Lat && form.referencia2Lng
+        ? { lat: Number(form.referencia2Lat), lng: Number(form.referencia2Lng) }
+        : null,
+    [form.referencia2Lat, form.referencia2Lng]
+  );
 
   useEffect(() => {
     if (!draftReady) return;
@@ -195,6 +318,32 @@ export default function RegisterMemberPage() {
       operationalGroup: groupFromQuery,
     }));
   }, [draftReady]);
+
+  // Carga la configuracion de financiamiento por modelo (la edita el admin).
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadFinancing = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/financing-motos`);
+        const data = (await response.json()) as { ok: boolean; models?: FinancingModel[] };
+
+        if (cancelled || !response.ok || !data.ok || !data.models) {
+          return;
+        }
+
+        setFinancingBySlug(Object.fromEntries(data.models.map((model) => [model.slug, model])));
+      } catch {
+        // Si falla, el plan de financiamiento avisa en pantalla que falta configurar.
+      }
+    };
+
+    void loadFinancing();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -244,10 +393,54 @@ export default function RegisterMemberPage() {
     }
   }, [draftReady, form, assets, step]);
 
+  // Aplica el plan de financiamiento (50% inicial + cuotas quincenales) con la
+  // configuracion guardada para el modelo de moto seleccionado.
+  const applyFinancingPlan = (motoSlug: string, current: MemberOnboardingForm): MemberOnboardingForm => {
+    const config = financingBySlug[motoSlug];
+
+    if (!config) {
+      return { ...current, planName: FINANCING_PLAN_NAME, installmentCount: "" };
+    }
+
+    const detail = computeFinancing({
+      precioBase: config.precioBase,
+      porcentajeInicial: config.porcentajeInicial,
+      cuotasQuincenales: config.cuotasQuincenales,
+      montoCuota: config.montoCuota,
+    });
+
+    return {
+      ...current,
+      planName: FINANCING_PLAN_NAME,
+      installmentCount: String(detail.cuotasQuincenales),
+      termMonths: String(Math.max(1, Math.round(detail.meses))),
+      monthlyAmount: detail.cuota > 0 ? String(detail.cuota) : current.monthlyAmount,
+      motoUnitPrice: current.motoUnitPrice.trim() ? current.motoUnitPrice : String(detail.precioBase),
+    };
+  };
+
   const updateField = (field: keyof MemberOnboardingForm, value: string) => {
     setError("");
     setSuccess("");
     setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  /** Marca o desmarca la omisión temporal de un documento (licencia, certificado de origen). */
+  const setDocumentOmission = (field: OmitFlag, value: boolean) => {
+    setError("");
+    setSuccess("");
+    setForm((current) => ({
+      ...current,
+      omitCertificateOrigin: field === "omitCertificateOrigin" ? value : current.omitCertificateOrigin,
+      omitLicencia: field === "omitLicencia" ? value : current.omitLicencia,
+    }));
+  };
+
+  /** ¿Ese documento está omitido temporalmente? */
+  const isDocumentOmitted = (documentKey: string) => {
+    const field = OMITABLE_DOCUMENTS[documentKey];
+    if (!field) return false;
+    return field === "omitCertificateOrigin" ? form.omitCertificateOrigin : form.omitLicencia;
   };
 
   const getAssetKey = (assetType: AssetType, documentKey: string, variant: AssetVariant) =>
@@ -309,11 +502,18 @@ export default function RegisterMemberPage() {
           empresa?: string;
           operationalGroup?: string;
           references?: string;
+          ubicacionLat?: number | null;
+          ubicacionLng?: number | null;
+          referenciaLat?: number | null;
+          referenciaLng?: number | null;
+          referencia2Lat?: number | null;
+          referencia2Lng?: number | null;
           motoSlug?: string;
           motoUnitPrice?: number;
           contractType?: string;
           planName?: string;
           termMonths?: number;
+          installmentCount?: number;
           monthlyAmount?: number;
           contractStartDate?: string;
           paymentMethod?: string;
@@ -348,11 +548,18 @@ export default function RegisterMemberPage() {
         empresa: data.profile?.empresa?.trim() ? data.profile.empresa : current.empresa,
         operationalGroup: data.profile?.operationalGroup ?? current.operationalGroup,
         references: data.profile?.references ?? current.references,
+        ubicacionLat: data.profile?.ubicacionLat != null ? String(data.profile.ubicacionLat) : current.ubicacionLat,
+        ubicacionLng: data.profile?.ubicacionLng != null ? String(data.profile.ubicacionLng) : current.ubicacionLng,
+        referenciaLat: data.profile?.referenciaLat != null ? String(data.profile.referenciaLat) : current.referenciaLat,
+        referenciaLng: data.profile?.referenciaLng != null ? String(data.profile.referenciaLng) : current.referenciaLng,
+        referencia2Lat: data.profile?.referencia2Lat != null ? String(data.profile.referencia2Lat) : current.referencia2Lat,
+        referencia2Lng: data.profile?.referencia2Lng != null ? String(data.profile.referencia2Lng) : current.referencia2Lng,
         motoSlug: data.profile?.motoSlug ?? current.motoSlug,
         motoUnitPrice: data.profile?.motoUnitPrice ? String(data.profile.motoUnitPrice) : current.motoUnitPrice,
         contractType: data.profile?.contractType ?? current.contractType,
         planName: data.profile?.planName ?? current.planName,
         termMonths: data.profile?.termMonths ? String(data.profile.termMonths) : current.termMonths,
+        installmentCount: data.profile?.installmentCount ? String(data.profile.installmentCount) : current.installmentCount,
         monthlyAmount: data.profile?.monthlyAmount ? String(data.profile.monthlyAmount) : current.monthlyAmount,
         contractStartDate: data.profile?.contractStartDate ?? current.contractStartDate,
         paymentMethod: data.profile?.paymentMethod ?? current.paymentMethod,
@@ -417,6 +624,14 @@ export default function RegisterMemberPage() {
       };
 
       if (!response.ok || !data.ok || !data.asset) {
+        if (response.status === 401) {
+          setError("Tu sesión expiró. Vuelve a iniciar sesión y sube el documento de nuevo.");
+          window.setTimeout(() => {
+            window.location.href = "/login";
+          }, 2500);
+          return;
+        }
+
         setError(data.message || "No se pudo subir el archivo.");
         return;
       }
@@ -448,75 +663,192 @@ export default function RegisterMemberPage() {
         ...nextAssets,
       }));
 
-      if (assetType === "DOCUMENT" && documentKey === "certificado-origen") {
-        setForm((current) => ({ ...current, omitCertificateOrigin: false }));
+      const omittableField = assetType === "DOCUMENT" ? OMITABLE_DOCUMENTS[documentKey] : undefined;
+      if (omittableField) {
+        setDocumentOmission(omittableField, false);
       }
-    } catch {
-      setError("No se pudo conectar con el servidor de archivos.");
+
+      // Escaneo automatico: al subir el documento "normal" se genera solo la
+      // version escaneada (y su PDF digital), sin que nadie pulse botones.
+      if (variant === "NORMAL") {
+        if (isPdfFile(file)) {
+          // Un PDF ya es un documento digital: se registra tambien como escaneado.
+          await uploadAsset(file, assetType, documentKey, "SCANNED");
+        } else {
+          await scanAndUpload(assetType, documentKey, file, { silent: true });
+
+          // La selfie que extrae el servidor de la cedula tambien se escanea sola.
+          if (data.autoSelfie) {
+            try {
+              const selfieSource = await fetchAssetBlob(buildAssetUrl(data.autoSelfie.filePath));
+              await scanAndUpload("DOCUMENT", "selfie", selfieSource, { silent: true });
+            } catch {
+              // Si no se puede leer, la selfie se puede subir escaneada a mano.
+            }
+          } else if (assetType === "DOCUMENT" && documentKey === "identidad") {
+            // En produccion el servidor no puede extraer la selfie (no tiene
+            // `sharp`): se detecta la cara en el navegador y se sube sola.
+            const detected = await detectFaceCropFromImage(file);
+            if (detected) {
+              await uploadDetectedSelfie(detected.blob, detected.confidence);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setError(`No se pudo subir el documento: ${detail}`);
     } finally {
       setUploadingKey(null);
     }
   };
 
-  const generateScannedFromNormal = async (assetType: AssetType, documentKey: string, scanMode: ScanMode = "normal", includeOcr = false) => {
+  /**
+   * Escanea en el navegador y sube la version SCANNED junto con su PDF digital.
+   * El algoritmo es el de `@/lib/document-scan.mjs` (mismo que se verifica con
+   * los documentos reales desde Node).
+   */
+  const scanAndUpload = async (
+    assetType: AssetType,
+    documentKey: string,
+    source: Blob,
+    options: { intensity?: ScanMode; silent?: boolean } = {},
+  ) => {
+    if (!form.cedula.trim()) {
+      setError("Completa la cedula antes de escanear documentos.");
+      return;
+    }
+
+    const mode = scanModeForDocument(documentKey) as "documento" | "foto";
+    const intensity: ScanMode = options.intensity ?? (mode === "foto" ? "normal" : "clean");
+    const key = getAssetKey(assetType, documentKey, "SCANNED");
+
+    setError("");
+    setScanningKey(key);
+
+    try {
+      const scanned = await scanImageBlob(source, { mode, intensity });
+      const pdf = await buildScannedPdf(await scanned.blob.arrayBuffer(), scanned.width, scanned.height);
+
+      const body = new FormData();
+      body.append("cedula", form.cedula);
+      body.append("assetType", assetType);
+      body.append("documentKey", documentKey);
+      body.append("variant", "SCANNED");
+      body.append("file", scanned.blob, `scan-${documentKey}.jpg`);
+      body.append("pdf", pdf, `scan-${documentKey}.pdf`);
+
+      const response = await fetch(`${API_BASE}/api/member-files/upload`, {
+        method: "POST",
+        body,
+      });
+
+      const data = (await response.json()) as {
+        ok: boolean;
+        message?: string;
+        asset?: { fileName: string; filePath: string; mimeType?: string };
+        pdfPath?: string | null;
+      };
+
+      if (!response.ok || !data.ok || !data.asset) {
+        setError(data.message || "No se pudo guardar el escaneo del documento.");
+        return;
+      }
+
+      const uploaded = data.asset;
+
+      setAssets((current) => ({
+        ...current,
+        [key]: {
+          fileName: uploaded.fileName,
+          filePath: uploaded.filePath,
+          mimeType: uploaded.mimeType,
+          pdfPath: data.pdfPath || undefined,
+        },
+      }));
+
+      if (!options.silent) {
+        setSuccess(
+          `Escaneo generado (${mode === "foto" ? "foto" : "documento"} · ${intensity === "clean" ? "limpio" : "normal"}).`,
+        );
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setError(`No se pudo escanear el documento (${detail}). Puedes subir el escaneado manual.`);
+    } finally {
+      setScanningKey(null);
+    }
+  };
+
+  /**
+   * Vuelve a escanear un documento a partir de su version "normal" ya cargada
+   * (botones "Escaneo normal" / "Escaneo limpio").
+   */
+  const generateScannedFromNormal = async (assetType: AssetType, documentKey: string, scanMode: ScanMode = "clean") => {
     if (!form.cedula.trim()) {
       setError("Completa la cedula antes de digitalizar documentos.");
       return;
     }
 
-    const key = getAssetKey(assetType, documentKey, "SCANNED");
-    setUploadingKey(key);
+    const normalAsset = assets[getAssetKey(assetType, documentKey, "NORMAL")];
+
+    if (!normalAsset) {
+      setError("Primero debes subir el documento normal para poder escanearlo.");
+      return;
+    }
+
     setError("");
+    setSuccess("");
 
     try {
-      const response = await fetch(`${API_BASE}/api/member-files/scan`, {
+      const source = await fetchAssetBlob(buildAssetUrl(normalAsset.filePath));
+      await scanAndUpload(assetType, documentKey, source, { intensity: scanMode });
+    } catch {
+      setError("No se pudo leer el documento original para escanearlo.");
+    }
+  };
+
+  /**
+   * Sube la selfie detectada automaticamente desde la cedula y la escanea.
+   */
+  const uploadDetectedSelfie = async (blob: Blob, confidence: number) => {
+    if (!form.cedula.trim()) return;
+
+    try {
+      const body = new FormData();
+      body.append("cedula", form.cedula);
+      body.append("assetType", "DOCUMENT");
+      body.append("documentKey", "selfie");
+      body.append("variant", "NORMAL");
+      body.append("file", blob, "selfie-detectada-cedula.jpg");
+
+      const response = await fetch(`${API_BASE}/api/member-files/upload`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cedula: form.cedula,
-          assetType,
-          documentKey,
-          scanMode,
-          includeOcr,
-        }),
+        body,
       });
 
       const data = (await response.json()) as {
         ok: boolean;
-        message: string;
         asset?: { fileName: string; filePath: string; mimeType?: string };
-        pdfPath?: string | null;
-        ocr?: {
-          preview?: string | null;
-          confidence?: number | null;
-          textPath?: string | null;
-        };
       };
 
-      if (!response.ok || !data.ok || !data.asset) {
-        setError(data.message || "No se pudo generar el escaneado digital.");
-        return;
-      }
-
-      const scannedAsset = data.asset;
+      if (!response.ok || !data.ok || !data.asset) return;
 
       setAssets((current) => ({
         ...current,
-        [key]: {
-          fileName: scannedAsset.fileName,
-          filePath: scannedAsset.filePath,
-          mimeType: scannedAsset.mimeType,
-          pdfPath: data.pdfPath || undefined,
-          ocrPreview: data.ocr?.preview || undefined,
-          ocrConfidence: data.ocr?.confidence ?? null,
-          ocrTextPath: data.ocr?.textPath || undefined,
+        [getAssetKey("DOCUMENT", "selfie", "NORMAL")]: {
+          fileName: data.asset!.fileName,
+          filePath: data.asset!.filePath,
+          mimeType: data.asset!.mimeType,
         },
       }));
-      setSuccess(data.message || "Escaneo digital generado correctamente.");
+
+      // La selfie tambien se escanea (modo foto, a color).
+      await scanAndUpload("DOCUMENT", "selfie", blob, { silent: true });
+
+      setSuccess(`Selfie de validación detectada automáticamente desde la cédula (${Math.round(confidence * 100)}% de confianza).`);
     } catch {
-      setError("No se pudo generar el escaneado digital.");
-    } finally {
-      setUploadingKey(null);
+      // Si falla, el usuario puede subir la selfie manualmente.
     }
   };
 
@@ -588,7 +920,7 @@ export default function RegisterMemberPage() {
 
     if (currentStep === 2) {
       return documentDefinitions.every((doc) => {
-        if (doc.key === "certificado-origen" && form.omitCertificateOrigin) return true;
+        if (isDocumentOmitted(doc.key)) return true;
         return hasAsset("DOCUMENT", doc.key, "NORMAL") && hasAsset("DOCUMENT", doc.key, "SCANNED");
       });
     }
@@ -700,11 +1032,19 @@ export default function RegisterMemberPage() {
           username: form.username.trim().toLowerCase(),
           encryptedKey: form.encryptedKey.trim().toUpperCase(),
           omitCertificateOrigin: form.omitCertificateOrigin,
+          omitLicencia: form.omitLicencia,
           payLater: form.payLater,
           motoUnitPrice: Number(form.motoUnitPrice || 0),
           termMonths: Number(form.termMonths),
+          installmentCount: Number(form.installmentCount || 0) || undefined,
           monthlyAmount: Number(form.monthlyAmount),
           paymentAmount: Number(form.paymentAmount),
+          ubicacionLat: form.ubicacionLat ? Number(form.ubicacionLat) : undefined,
+          ubicacionLng: form.ubicacionLng ? Number(form.ubicacionLng) : undefined,
+          referenciaLat: form.referenciaLat ? Number(form.referenciaLat) : undefined,
+          referenciaLng: form.referenciaLng ? Number(form.referenciaLng) : undefined,
+          referencia2Lat: form.referencia2Lat ? Number(form.referencia2Lat) : undefined,
+          referencia2Lng: form.referencia2Lng ? Number(form.referencia2Lng) : undefined,
         }),
       });
 
@@ -749,6 +1089,47 @@ export default function RegisterMemberPage() {
     }
   };
 
+  // Orden de las tarjetas del paso 4: "Registrar pago ahora" va de primero y es
+  // el modo por defecto (form.payLater arranca en false).
+  const paymentModeOptions = [
+    {
+      key: "now",
+      active: !form.payLater,
+      label: "Registrar pago ahora",
+      hint: "Al registrar el pago, la cuota #1 queda pagada y solvente.",
+      selectedClass: "border-emerald-500 bg-emerald-50 shadow-[0_0_0_3px_rgba(16,185,129,0.18)]",
+      idleClass: "border-zinc-200 bg-white hover:border-emerald-300",
+      dotClass: "border-emerald-600 bg-emerald-600 text-white",
+      labelClass: "text-emerald-900",
+      badgeClass: "bg-emerald-600",
+      onClick: () => setForm((current) => ({ ...current, payLater: false })),
+    },
+    {
+      key: "later",
+      active: form.payLater,
+      label: "Pagar después",
+      hint: "La cuota #1 queda pendiente para que el admin la registre luego.",
+      selectedClass: "border-amber-500 bg-amber-50 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]",
+      idleClass: "border-zinc-200 bg-white hover:border-amber-300",
+      dotClass: "border-amber-600 bg-amber-500 text-white",
+      labelClass: "text-amber-900",
+      badgeClass: "bg-amber-500",
+      onClick: () => {
+        const cedulaLabel = form.cedula.trim() || "SIN-CEDULA";
+        setForm((current) => ({
+          ...current,
+          payLater: true,
+          paymentMethod: "Pagar después",
+          paymentBank: "Pendiente",
+          paymentReference: `PEND-${cedulaLabel}`,
+          paymentAmount: "0",
+          paymentDate: current.contractStartDate || new Date().toISOString().slice(0, 10),
+        }));
+      },
+    },
+  ];
+
+
   return (
     <main className="min-h-screen bg-[#f3f4f6] px-4 py-8 text-zinc-900 sm:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -762,7 +1143,12 @@ export default function RegisterMemberPage() {
               {registrationCompleted || step === 1 ? "Regresar al inicio del registro" : "Regresar al paso anterior"}
             </button>
           </div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">TEAM SAN · Registro de miembros</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            TEAM SAN · Registro de miembros
+            <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold tracking-normal text-emerald-700">
+              escáner v2
+            </span>
+          </p>
           <h1 className="mt-2 text-3xl font-semibold">Registro del Expediente</h1>
           <p className="mt-2 text-sm text-zinc-600">
             Secuencia ordenada: datos personales, documentos, contratos, pago y credenciales de acceso.
@@ -795,6 +1181,26 @@ export default function RegisterMemberPage() {
 
         <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
           <article className="rounded-2xl border border-zinc-200 bg-white p-5">
+            {error ? (
+              <p className="mb-4 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                {error}
+              </p>
+            ) : null}
+            {success ? (
+              <p className="mb-4 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                {success}
+              </p>
+            ) : null}
+            {scanningKey ? (
+              <p className="mb-4 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-700">
+                Escaneando automáticamente… el documento se está digitalizando.
+              </p>
+            ) : null}
+            {uploadingKey ? (
+              <p className="mb-4 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                Procesando carga: {uploadingKey}
+              </p>
+            ) : null}
             {step === 1 && (
               <div className="grid gap-4 sm:grid-cols-2">
                 <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Nombre" value={form.nombre} onChange={(e) => updateField("nombre", e.target.value)} />
@@ -814,6 +1220,19 @@ export default function RegisterMemberPage() {
                 </div>
                 <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Ocupacion" value={form.ocupacion} onChange={(e) => updateField("ocupacion", e.target.value)} />
                 <input className="rounded-xl border border-zinc-200 px-4 py-3 sm:col-span-2" placeholder="Direccion" value={form.direccion} onChange={(e) => updateField("direccion", e.target.value)} />
+                <div className="sm:col-span-2">
+                  <LocationField
+                    title="Ubicación del cliente"
+                    hint="Abre el mapa, busca la dirección o usa tu GPS y guarda el punto exacto del cliente."
+                    value={clienteUbicacion}
+                    allowInternational
+                    onSave={(point, address) => {
+                      updateField("ubicacionLat", point ? String(point.lat) : "");
+                      updateField("ubicacionLng", point ? String(point.lng) : "");
+                      if (address) updateField("direccion", address);
+                    }}
+                  />
+                </div>
                 <div className="space-y-2 sm:col-span-2">
                   <label className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Empresa</label>
                   <select
@@ -834,12 +1253,40 @@ export default function RegisterMemberPage() {
                   value={form.references}
                   onChange={(e) => updateField("references", e.target.value)}
                 />
+                <div className="sm:col-span-2">
+                  <LocationField
+                    title="Ubicación de la referencia 1"
+                    hint="Abre el mapa y guarda el punto donde vive o está la primera referencia."
+                    value={referenciaUbicacion}
+                    onSave={(point) => {
+                      updateField("referenciaLat", point ? String(point.lat) : "");
+                      updateField("referenciaLng", point ? String(point.lng) : "");
+                    }}
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <LocationField
+                    title="Ubicación de la referencia 2"
+                    hint="Abre el mapa y guarda el punto donde vive o está la segunda referencia."
+                    value={referencia2Ubicacion}
+                    onSave={(point) => {
+                      updateField("referencia2Lat", point ? String(point.lat) : "");
+                      updateField("referencia2Lng", point ? String(point.lng) : "");
+                    }}
+                  />
+                </div>
                 <div className="space-y-2 sm:col-span-2">
                   <label className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">Activo solicitado por el cliente</label>
                   <select
                     className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm"
                     value={form.motoSlug}
-                    onChange={(e) => updateField("motoSlug", e.target.value)}
+                    onChange={(e) => {
+                      const slug = e.target.value;
+                      setForm((current) => {
+                        const next = { ...current, motoSlug: slug };
+                        return isFinancingPlan(current.planName) ? applyFinancingPlan(slug, next) : next;
+                      });
+                    }}
                   >
                     <option value="">Selecciona modelo de moto</option>
                     {MOTOS.map((moto) => (
@@ -892,10 +1339,16 @@ export default function RegisterMemberPage() {
                           return;
                         }
 
+                        if (selected.kind === "financing") {
+                          setForm((current) => applyFinancingPlan(current.motoSlug, current));
+                          return;
+                        }
+
                         setForm((current) => ({
                           ...current,
                           planName: selected.planName,
                           termMonths: "12",
+                          installmentCount: "",
                           monthlyAmount: current.monthlyAmount.trim() ? current.monthlyAmount : selected.monthlyAmount,
                         }));
                       }}
@@ -930,7 +1383,34 @@ export default function RegisterMemberPage() {
                         />
                       </div>
                     </div>
-                    <p className="mt-2 text-xs text-zinc-500">La duración viene predeterminada en 1 año (12 meses). Puedes ajustar el monto según el caso.</p>
+                    {isFinancingPlan(form.planName) ? (
+                      <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                        <p className="font-semibold">Financiamiento 50% + cuotas quincenales (cada 15 días)</p>
+                        {selectedFinancing ? (
+                          <>
+                            <p className="mt-1">
+                              Precio <span className="font-semibold">${selectedFinancing.precioBase.toFixed(2)}</span> ·
+                              Inicial {selectedFinancing.porcentajeInicial}%{" "}
+                              <span className="font-semibold">${selectedFinancing.inicial.toFixed(2)}</span> · Saldo{" "}
+                              <span className="font-semibold">${selectedFinancing.saldo.toFixed(2)}</span>
+                            </p>
+                            <p className="mt-1">
+                              <span className="font-semibold">{selectedFinancing.cuotasQuincenales} cuotas</span> de{" "}
+                              <span className="font-semibold">${selectedFinancing.cuota.toFixed(2)}</span> · duración aprox.{" "}
+                              {selectedFinancing.meses} meses
+                            </p>
+                          </>
+                        ) : (
+                          <p className="mt-1 font-semibold">
+                            {form.motoSlug
+                              ? "Este modelo no tiene financiamiento configurado. Pídele al admin que lo configure en el panel."
+                              : "Selecciona primero el modelo de moto para cargar su financiamiento."}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-zinc-500">La duración viene predeterminada en 1 año (12 meses). Puedes ajustar el monto según el caso.</p>
+                    )}
                     <div className="mt-3">
                       <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Grupo operativo</label>
                       <select
@@ -959,25 +1439,31 @@ export default function RegisterMemberPage() {
                   const scannedKey = `doc-${doc.key}-scanned`;
                   const normalInputKey = `${normalKey}-input`;
                   const scannedInputKey = `${scannedKey}-input`;
-                  const certificateOmitted = doc.key === "certificado-origen" && form.omitCertificateOrigin;
+                  const omissionField = OMITABLE_DOCUMENTS[doc.key];
+                  const documentOmitted = isDocumentOmitted(doc.key);
 
                   return (
                     <div key={doc.key} className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-                      <p className="text-sm font-semibold text-zinc-900">{doc.label}</p>
-                      {doc.key === "certificado-origen" ? (
+                      <p className="text-sm font-semibold text-zinc-900">
+                        {doc.label}
+                        {documentOmitted ? (
+                          <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                            Omitido
+                          </span>
+                        ) : null}
+                      </p>
+                      {omissionField ? (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => {
-                              setForm((current) => ({ ...current, omitCertificateOrigin: !current.omitCertificateOrigin }));
-                            }}
+                            onClick={() => setDocumentOmission(omissionField, !documentOmitted)}
                             className={`rounded-lg border px-2 py-1 text-xs font-semibold ${
-                              certificateOmitted
+                              documentOmitted
                                 ? "border-amber-300 bg-amber-50 text-amber-700"
                                 : "border-zinc-300 bg-white text-zinc-700"
                             }`}
                           >
-                            {certificateOmitted ? "Omitido por ahora" : "Omitir por ahora"}
+                            {documentOmitted ? "Omitido por ahora" : "Omitir por ahora"}
                           </button>
                           <p className="text-xs text-zinc-500">Si el cliente no lo tiene hoy, puedes continuar y cargarlo después.</p>
                         </div>
@@ -1014,12 +1500,24 @@ export default function RegisterMemberPage() {
                             ref={setFileInputRef(normalInputKey)}
                             onChange={(event) => {
                               const file = event.target.files?.[0];
-                              if (file) void uploadAsset(file, "DOCUMENT", doc.key, "NORMAL");
+                              if (file) {
+                                setPickLabels((current) => ({
+                                  ...current,
+                                  [normalInputKey]: `${file.name} (${Math.max(1, Math.round(file.size / 1024))} KB)`,
+                                }));
+                                void uploadAsset(file, "DOCUMENT", doc.key, "NORMAL");
+                              }
                               event.target.value = "";
                             }}
                             className="hidden"
                           />
-                          <p className="mt-2 text-xs text-zinc-600">{normalAsset ? `Cargado: ${normalAsset.fileName}` : "Sin cargar"}</p>
+                          <p className="mt-2 text-xs text-zinc-600">
+                            {normalAsset
+                              ? `Cargado: ${normalAsset.fileName}`
+                              : pickLabels[normalInputKey]
+                                ? `Seleccionado: ${pickLabels[normalInputKey]} — subiendo…`
+                                : "Sin cargar"}
+                          </p>
                           {normalAsset ? (
                             <button
                               type="button"
@@ -1033,11 +1531,11 @@ export default function RegisterMemberPage() {
                               {deletingKey === getAssetKey("DOCUMENT", doc.key, "NORMAL") ? "Eliminando..." : "Eliminar archivo"}
                             </button>
                           ) : null}
-                          {certificateOmitted ? <p className="mt-2 text-xs font-semibold text-amber-700">Documento omitido temporalmente.</p> : null}
+                          {documentOmitted ? <p className="mt-2 text-xs font-semibold text-amber-700">Documento omitido temporalmente.</p> : null}
                           {normalAsset ? (
                             <div className="mt-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100">
                               {isImageAsset(normalAsset) ? (
-                                <Image src={normalAsset.filePath} alt={`Vista previa ${doc.label}`} width={640} height={320} className="h-40 w-full object-cover" />
+                                <Image src={buildAssetUrl(normalAsset.filePath)} alt={`Vista previa ${doc.label}`} width={640} height={320} unoptimized className="h-40 w-full object-cover" />
                               ) : (
                                 <div className="flex h-24 items-center justify-center px-3 text-xs text-zinc-600">Archivo cargado correctamente.</div>
                               )}
@@ -1069,7 +1567,7 @@ export default function RegisterMemberPage() {
                           }`}
                         >
                           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Escaneado</p>
-                          <p className="mt-2 text-xs text-zinc-500">Haz clic para escanear automaticamente el archivo normal ya cargado.</p>
+                          <p className="mt-2 text-xs text-zinc-500">Se genera automáticamente al subir el documento normal.</p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <input
                               type="file"
@@ -1126,7 +1624,7 @@ export default function RegisterMemberPage() {
                               {deletingKey === getAssetKey("DOCUMENT", doc.key, "SCANNED") ? "Eliminando..." : "Eliminar archivo"}
                             </button>
                           ) : null}
-                          {certificateOmitted ? <p className="mt-2 text-xs font-semibold text-amber-700">Escaneo omitido temporalmente.</p> : null}
+                          {documentOmitted ? <p className="mt-2 text-xs font-semibold text-amber-700">Escaneo omitido temporalmente.</p> : null}
                           {scannedAsset ? (
                             <a
                               href={getPdfPath(scannedAsset) ?? "#"}
@@ -1157,7 +1655,7 @@ export default function RegisterMemberPage() {
                           {scannedAsset ? (
                             <div className="mt-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100">
                               {isImageAsset(scannedAsset) ? (
-                                <Image src={scannedAsset.filePath} alt={`Vista previa escaneada ${doc.label}`} width={640} height={320} className="h-40 w-full object-cover" />
+                                <Image src={buildAssetUrl(scannedAsset.filePath)} alt={`Vista previa escaneada ${doc.label}`} width={640} height={320} unoptimized className="h-40 w-full object-cover" />
                               ) : (
                                 <div className="flex h-24 items-center justify-center px-3 text-xs text-zinc-600">Archivo escaneado registrado.</div>
                               )}
@@ -1238,7 +1736,7 @@ export default function RegisterMemberPage() {
                           {normalAsset ? (
                             <div className="mt-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100">
                               {isImageAsset(normalAsset) ? (
-                                <Image src={normalAsset.filePath} alt={`Vista previa ${contract.label}`} width={640} height={320} className="h-40 w-full object-cover" />
+                                <Image src={buildAssetUrl(normalAsset.filePath)} alt={`Vista previa ${contract.label}`} width={640} height={320} unoptimized className="h-40 w-full object-cover" />
                               ) : (
                                 <div className="flex h-24 items-center justify-center px-3 text-xs text-zinc-600">Contrato normal cargado.</div>
                               )}
@@ -1270,7 +1768,7 @@ export default function RegisterMemberPage() {
                           }`}
                         >
                           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Contrato escaneado</p>
-                          <p className="mt-2 text-xs text-zinc-500">Haz clic para escanear automaticamente el contrato normal ya cargado.</p>
+                          <p className="mt-2 text-xs text-zinc-500">Se genera automáticamente al subir el contrato normal.</p>
                           <input
                             type="file"
                             ref={setFileInputRef(scannedInputKey)}
@@ -1357,7 +1855,7 @@ export default function RegisterMemberPage() {
                           {scannedAsset ? (
                             <div className="mt-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100">
                               {isImageAsset(scannedAsset) ? (
-                                <Image src={scannedAsset.filePath} alt={`Vista previa escaneada ${contract.label}`} width={640} height={320} className="h-40 w-full object-cover" />
+                                <Image src={buildAssetUrl(scannedAsset.filePath)} alt={`Vista previa escaneada ${contract.label}`} width={640} height={320} unoptimized className="h-40 w-full object-cover" />
                               ) : (
                                 <div className="flex h-24 items-center justify-center px-3 text-xs text-zinc-600">Contrato escaneado registrado.</div>
                               )}
@@ -1381,38 +1879,65 @@ export default function RegisterMemberPage() {
 
             {step === 4 && (
               <div className="grid gap-4 sm:grid-cols-2">
-                <div className="sm:col-span-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const cedulaLabel = form.cedula.trim() || "SIN-CEDULA";
-                      setForm((current) => ({
-                        ...current,
-                        payLater: true,
-                        paymentMethod: "Pagar después",
-                        paymentBank: "Pendiente",
-                        paymentReference: `PEND-${cedulaLabel}`,
-                        paymentAmount: "0",
-                        paymentDate: current.contractStartDate || new Date().toISOString().slice(0, 10),
-                      }));
-                    }}
-                    className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100"
-                  >
-                    Pagar después
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setForm((current) => ({ ...current, payLater: false }))}
-                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-100"
-                  >
-                    Registrar pago ahora
-                  </button>
+                <div className="sm:col-span-2">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                      Forma de registrar el pago inicial
+                    </p>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white ${
+                        form.payLater ? "bg-amber-500" : "bg-emerald-600"
+                      }`}
+                    >
+                      {form.payLater ? "Pagar después" : "Pago ahora"}
+                    </span>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {paymentModeOptions.map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        aria-pressed={option.active}
+                        onClick={option.onClick}
+                        className={`relative flex items-start gap-3 rounded-xl border-2 p-4 text-left transition ${
+                          option.active ? option.selectedClass : option.idleClass
+                        }`}
+                      >
+                        <span
+                          className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[11px] font-bold ${
+                            option.active ? option.dotClass : "border-zinc-300 bg-white text-transparent"
+                          }`}
+                        >
+                          ✓
+                        </span>
+                        <span className="pr-20">
+                          <span className={`block text-sm font-semibold ${option.active ? option.labelClass : "text-zinc-800"}`}>
+                            {option.label}
+                          </span>
+                          <span className="mt-1 block text-xs text-zinc-500">{option.hint}</span>
+                        </span>
+                        {option.active ? (
+                          <span className={`absolute right-3 top-3 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white ${option.badgeClass}`}>
+                            Seleccionado
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+
+                  </div>
                 </div>
-                <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Metodo de pago" value={form.paymentMethod} onChange={(e) => updateField("paymentMethod", e.target.value)} />
-                <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Banco" value={form.paymentBank} onChange={(e) => updateField("paymentBank", e.target.value)} />
-                <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Referencia" value={form.paymentReference} onChange={(e) => updateField("paymentReference", e.target.value)} />
-                <input className="rounded-xl border border-zinc-200 px-4 py-3" placeholder="Monto pagado" type="number" min={0} value={form.paymentAmount} onChange={(e) => updateField("paymentAmount", e.target.value)} />
-                <input className="rounded-xl border border-zinc-200 px-4 py-3 sm:col-span-2" placeholder="Fecha de pago" type="date" value={form.paymentDate} onChange={(e) => updateField("paymentDate", e.target.value)} />
+                {form.payLater ? (
+                  <p className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                    Estás en modo «pagar después»: los datos de pago no se usan (la cuota #1 queda pendiente).
+                  </p>
+                ) : null}
+
+                <input className={`rounded-xl border border-zinc-200 px-4 py-3 ${form.payLater ? "bg-zinc-100 text-zinc-400" : ""}`} placeholder="Metodo de pago" disabled={form.payLater} value={form.paymentMethod} onChange={(e) => updateField("paymentMethod", e.target.value)} />
+                <input className={`rounded-xl border border-zinc-200 px-4 py-3 ${form.payLater ? "bg-zinc-100 text-zinc-400" : ""}`} placeholder="Banco" disabled={form.payLater} value={form.paymentBank} onChange={(e) => updateField("paymentBank", e.target.value)} />
+                <input className={`rounded-xl border border-zinc-200 px-4 py-3 ${form.payLater ? "bg-zinc-100 text-zinc-400" : ""}`} placeholder="Referencia" disabled={form.payLater} value={form.paymentReference} onChange={(e) => updateField("paymentReference", e.target.value)} />
+                <input className={`rounded-xl border border-zinc-200 px-4 py-3 ${form.payLater ? "bg-zinc-100 text-zinc-400" : ""}`} placeholder="Monto pagado" type="number" min={0} disabled={form.payLater} value={form.paymentAmount} onChange={(e) => updateField("paymentAmount", e.target.value)} />
+                <input className={`rounded-xl border border-zinc-200 px-4 py-3 sm:col-span-2 ${form.payLater ? "bg-zinc-100 text-zinc-400" : ""}`} placeholder="Fecha de pago" type="date" disabled={form.payLater} value={form.paymentDate} onChange={(e) => updateField("paymentDate", e.target.value)} />
                 {form.payLater ? (
                   <div className="sm:col-span-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     Registro configurado en modo <span className="font-semibold">pagar después</span>: la cuota #1 quedará pendiente para que el admin la registre manualmente.
@@ -1449,8 +1974,6 @@ export default function RegisterMemberPage() {
               </div>
             )}
 
-            {error ? <p className="mt-4 text-sm text-rose-600">{error}</p> : null}
-            {success ? <p className="mt-4 text-sm text-emerald-600">{success}</p> : null}
             {registrationCompleted ? (
               <button
                 type="button"
@@ -1462,7 +1985,6 @@ export default function RegisterMemberPage() {
                 Ir al inicio del registro
               </button>
             ) : null}
-            {uploadingKey ? <p className="mt-4 text-sm text-zinc-500">Procesando carga: {uploadingKey}</p> : null}
 
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
               <button type="button" onClick={goBack} disabled={step === 1} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm disabled:opacity-40">
@@ -1491,6 +2013,51 @@ export default function RegisterMemberPage() {
                 <p><span className="text-zinc-500">Empresa:</span> {form.empresa || "-"}</p>
                 <p><span className="text-zinc-500">Grupo operativo:</span> {form.operationalGroup || "Grupo 01"}</p>
                 <p><span className="text-zinc-500">Referencias:</span> {form.references || "-"}</p>
+                <div>
+                  <p>
+                    <span className="text-zinc-500">Ubicación del cliente:</span>{" "}
+                    {clienteUbicacion ? "Guardada" : "Sin registrar"}
+                  </p>
+                  {clienteUbicacion ? (
+                    <div className="mt-2">
+                      <SavedLocationPreview
+                        label="Ubicación del cliente"
+                        lat={clienteUbicacion.lat}
+                        lng={clienteUbicacion.lng}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+                <div>
+                  <p>
+                    <span className="text-zinc-500">Ubicación de la referencia 1:</span>{" "}
+                    {referenciaUbicacion ? "Guardada" : "Sin registrar"}
+                  </p>
+                  {referenciaUbicacion ? (
+                    <div className="mt-2">
+                      <SavedLocationPreview
+                        label="Ubicación de la referencia 1"
+                        lat={referenciaUbicacion.lat}
+                        lng={referenciaUbicacion.lng}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+                <div>
+                  <p>
+                    <span className="text-zinc-500">Ubicación de la referencia 2:</span>{" "}
+                    {referencia2Ubicacion ? "Guardada" : "Sin registrar"}
+                  </p>
+                  {referencia2Ubicacion ? (
+                    <div className="mt-2">
+                      <SavedLocationPreview
+                        label="Ubicación de la referencia 2"
+                        lat={referencia2Ubicacion.lat}
+                        lng={referencia2Ubicacion.lng}
+                      />
+                    </div>
+                  ) : null}
+                </div>
                 <p><span className="text-zinc-500">Activo solicitado:</span> {selectedMoto?.nombre || "-"}</p>
                 <p><span className="text-zinc-500">Precio real moto:</span> {form.motoUnitPrice ? `$${Number(form.motoUnitPrice).toFixed(2)}` : "No definido"}</p>
                 <p><span className="text-zinc-500">Contrato:</span> {form.contractType || "-"}</p>
@@ -1502,7 +2069,7 @@ export default function RegisterMemberPage() {
                   <span className="text-zinc-500">Documentos digitales:</span>{" "}
                   {
                     documentDefinitions.filter((doc) => {
-                      if (doc.key === "certificado-origen" && form.omitCertificateOrigin) return true;
+                      if (isDocumentOmitted(doc.key)) return true;
                       return hasAsset("DOCUMENT", doc.key, "NORMAL") && hasAsset("DOCUMENT", doc.key, "SCANNED");
                     }).length
                   }/{documentDefinitions.length}

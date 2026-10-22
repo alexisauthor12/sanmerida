@@ -1,11 +1,33 @@
-{
+﻿{
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "sanmerida",
   "main": ".open-next/worker.js",
-  "compatibility_date": "2026-08-09",
-  "compatibility_flags": ["nodejs_compat"],
+  "name": "sanmerida-com",
+  "compatibility_date": "2025-05-05",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
-  }
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "sanmerida-com"
+    }
+  ],
+  // Variables publicas del almacenamiento de expedientes (Supabase Storage).
+  // La service_role key NO va aqui: se configura como secreto del Worker con
+  // `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`.
+  "vars": {
+    "SUPABASE_URL": "https://qtckdjyjdxzvxcnqusmv.supabase.co",
+    "SUPABASE_STORAGE_BUCKET": "member-documents"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "1eb391a294e2497a8ac7983572a68616"
+    }
+  ]
 }

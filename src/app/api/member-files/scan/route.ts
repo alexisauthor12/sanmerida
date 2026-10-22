@@ -1,12 +1,41 @@
-import { copyFile, mkdir, readFile, writeFile } from "fs/promises";
+import { randomUUID } from "crypto";
 import path from "path";
 import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
-import sharp from "sharp";
+import {
+  buildAssetKey,
+  buildDerivedPdfKey,
+  buildDerivedTextKey,
+  sanitizeAssetSegment,
+  sanitizeCedulaDigits,
+} from "@/lib/asset-paths.mjs";
+import { readAssetObject, saveAssetObject } from "@/lib/asset-storage";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
+
+/**
+ * `sharp` es un modulo nativo: no esta disponible en Cloudflare Workers. Se
+ * carga de forma perezosa para que la ruta devuelva un error controlado en vez
+ * de romper la carga del modulo completo.
+ */
+type SharpFactory = typeof import("sharp");
+
+let sharpFactoryPromise: Promise<SharpFactory> | null = null;
+
+function loadSharp(): Promise<SharpFactory> {
+  if (!sharpFactoryPromise) {
+    sharpFactoryPromise = import("sharp")
+      .then((module) => module.default)
+      .catch((error) => {
+        sharpFactoryPromise = null;
+        throw error;
+      });
+  }
+
+  return sharpFactoryPromise;
+}
 
 type AssetType = "DOCUMENT" | "CONTRACT";
 type ScanMode = "normal" | "clean";
@@ -24,11 +53,11 @@ const globalForOcr = globalThis as unknown as {
 };
 
 function sanitizeSegment(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitizeAssetSegment(value);
 }
 
 function sanitizeCedula(value: string) {
-  return value.replace(/[^0-9]/g, "");
+  return sanitizeCedulaDigits(value);
 }
 
 function isImageFile(fileName: string, mimeType?: string | null) {
@@ -42,6 +71,7 @@ function isPdfFile(fileName: string, mimeType?: string | null) {
 }
 
 async function createPdfFromImageAndText(imageBytes: Buffer, ocrText: string, confidence?: number) {
+  const sharp = await loadSharp();
   const metadata = await sharp(imageBytes).metadata();
   const width = metadata.width ?? 1200;
   const height = metadata.height ?? 1700;
@@ -75,6 +105,7 @@ async function createPdfFromImageAndText(imageBytes: Buffer, ocrText: string, co
 }
 
 async function createPdfFromImageOnly(imageBytes: Buffer) {
+  const sharp = await loadSharp();
   const metadata = await sharp(imageBytes).metadata();
   const width = metadata.width ?? 1200;
   const height = metadata.height ?? 1700;
@@ -135,12 +166,12 @@ async function runOcr(imageBytes: Buffer) {
 }
 
 function buildPdfPathFromAssetPath(filePath: string) {
-  const ext = path.extname(filePath);
-  if (!ext) return `${filePath}.pdf`;
-  return `${filePath.slice(0, -ext.length)}.pdf`;
+  return buildDerivedPdfKey(filePath);
 }
 
 async function enhanceDocumentImage(sourceBytes: Buffer, scanMode: ScanMode) {
+  const sharp = await loadSharp();
+
   const normalizedGray = await sharp(sourceBytes)
     .rotate()
     .grayscale()
@@ -221,23 +252,25 @@ export async function POST(request: Request) {
     }
 
     const normal = profile.assets.find(
-      (asset) => asset.assetType === assetType && asset.documentKey === documentKey && asset.variant === "NORMAL",
+      (asset: any) => asset.assetType === assetType && asset.documentKey === documentKey && asset.variant === "NORMAL",
     );
 
     if (!normal) {
       return NextResponse.json({ ok: false, message: "Primero debes subir el documento/contrato normal." }, { status: 400 });
     }
 
-    const src = path.join(process.cwd(), "public", normal.filePath.replace(/^\//, ""));
+    const sourceBytes = await readAssetObject(normal.filePath);
     const normalExt = path.extname(normal.fileName || normal.filePath).toLowerCase();
     const scannedExt = isImageFile(normal.fileName || normal.filePath, normal.mimeType) ? ".jpg" : normalExt || ".bin";
-    const scanName = `${Date.now()}-scan${scannedExt}`;
-    const relativeDir = path.join("uploads", "members", cedula, assetType.toLowerCase(), documentKey, "scanned");
-    const absoluteDir = path.join(process.cwd(), "public", relativeDir);
-    const dest = path.join(absoluteDir, scanName);
 
-    await mkdir(absoluteDir, { recursive: true });
-    let finalFilePath = `/${path.join(relativeDir, scanName).replace(/\\/g, "/")}`;
+    let finalFilePath = buildAssetKey({
+      cedula,
+      assetType,
+      documentKey,
+      variant: "SCANNED",
+      fileName: `scan${scannedExt}`,
+      token: randomUUID().slice(0, 8),
+    });
     let finalFileName = `scan-${normal.fileName}`;
     let finalMimeType = normal.mimeType || "application/octet-stream";
     let finalSize = normal.size;
@@ -247,11 +280,9 @@ export async function POST(request: Request) {
     let ocrTextPath: string | null = null;
 
     if (isImageFile(normal.fileName || normal.filePath, normal.mimeType)) {
-      const sourceBytes = await readFile(src);
-
       const processedImage = await enhanceDocumentImage(sourceBytes, scanMode);
 
-      await writeFile(dest, processedImage);
+      await saveAssetObject(finalFilePath, processedImage, "image/jpeg");
 
       let ocrText = "";
       if (includeOcr) {
@@ -261,10 +292,9 @@ export async function POST(request: Request) {
           ocrConfidence = ocrResult.confidence ?? null;
           ocrPreview = ocrText.replace(/\s+/g, " ").trim().slice(0, 240);
 
-          const txtFileName = scanName.replace(/\.[^.]+$/, ".txt");
-          const txtDest = path.join(absoluteDir, txtFileName);
-          await writeFile(txtDest, ocrText || "");
-          ocrTextPath = `/${path.join(relativeDir, txtFileName).replace(/\\/g, "/")}`;
+          const txtKey = buildDerivedTextKey(finalFilePath);
+          await saveAssetObject(txtKey, Buffer.from(ocrText || ""), "text/plain; charset=utf-8");
+          ocrTextPath = txtKey;
         } catch {
           ocrPreview = "OCR no disponible para este documento.";
         }
@@ -273,31 +303,26 @@ export async function POST(request: Request) {
       const pdfBytes = includeOcr
         ? await createPdfFromImageAndText(processedImage, ocrText, ocrConfidence ?? undefined)
         : await createPdfFromImageOnly(processedImage);
-      const pdfFileName = scanName.replace(/\.[^.]+$/, ".pdf");
-      const pdfDest = path.join(absoluteDir, pdfFileName);
-      await writeFile(pdfDest, pdfBytes);
+      const pdfKey = buildDerivedPdfKey(finalFilePath);
+      await saveAssetObject(pdfKey, pdfBytes, "application/pdf");
 
-      finalFilePath = `/${path.join(relativeDir, scanName).replace(/\\/g, "/")}`;
-      generatedPdfPath = `/${path.join(relativeDir, pdfFileName).replace(/\\/g, "/")}`;
+      generatedPdfPath = pdfKey;
       finalFileName = `scan-${path.basename(normal.fileName || "documento")}`;
       finalMimeType = "image/jpeg";
       finalSize = processedImage.length;
     } else if (isPdfFile(normal.fileName || normal.filePath, normal.mimeType)) {
-      const sourceBytes = await readFile(src);
       const pdfDoc = await PDFDocument.load(sourceBytes);
       const normalizedPdf = Buffer.from(await pdfDoc.save());
 
-      await writeFile(dest, normalizedPdf);
-      finalFilePath = `/${path.join(relativeDir, scanName).replace(/\\/g, "/")}`;
+      await saveAssetObject(finalFilePath, normalizedPdf, "application/pdf");
       generatedPdfPath = finalFilePath;
       finalFileName = `scan-${path.basename(normal.fileName || "documento.pdf")}`;
       finalMimeType = "application/pdf";
       finalSize = normalizedPdf.length;
     } else {
-      await copyFile(src, dest);
+      await saveAssetObject(finalFilePath, sourceBytes, normal.mimeType || "application/octet-stream");
 
       const fallbackPdfPath = buildPdfPathFromAssetPath(finalFilePath);
-      const fallbackPdfAbsolute = path.join(process.cwd(), "public", fallbackPdfPath.replace(/^\//, ""));
 
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([595, 842]);
@@ -305,7 +330,7 @@ export async function POST(request: Request) {
       page.drawText(`Archivo base: ${normal.fileName}`, { x: 50, y: 750, size: 11 });
       page.drawText(`Cedula: ${cedula}`, { x: 50, y: 730, size: 11 });
       page.drawText("El archivo original fue registrado en el expediente.", { x: 50, y: 710, size: 11 });
-      await writeFile(fallbackPdfAbsolute, Buffer.from(await pdfDoc.save()));
+      await saveAssetObject(fallbackPdfPath, Buffer.from(await pdfDoc.save()), "application/pdf");
       generatedPdfPath = fallbackPdfPath;
     }
 

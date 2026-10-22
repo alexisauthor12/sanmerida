@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  engineType    = "client"
 }
 
 datasource db {
@@ -44,11 +45,20 @@ model MemberProfile {
   ocupacion         String?
   empresa           String?
   username          String?       @unique
+  // Credenciales del miembro guardadas en el expediente: la clave
+  // SAN-MEMBER-XXXXXX se almacena cifrada (AES-256-GCM) para que el
+  // administrador pueda consultarla. El login sigue usando el hash bcrypt
+  // del User.passwordHash.
+  memberKeyCipher   String?
+  memberKeyIssuedAt DateTime?
   motoSlug          String?
   motoMarca         String?
   motoModelo        String?
   motoImagen        String?
   motoUnitPrice     Float?
+  // Numero de cuotas exacto del plan contratado (obligatorio para el plan de
+  // financiamiento, donde la duracion depende del modelo de moto).
+  installmentCount  Int?
   contractType      String?
   planName          String?
   termMonths        Int?
@@ -60,6 +70,15 @@ model MemberProfile {
   paymentAmount     Float?
   paymentDate       String?
   references        String?
+  ubicacionLat      Float?
+  ubicacionLng      Float?
+  ubicacionLink     String?
+  referenciaLat     Float?
+  referenciaLng     Float?
+  referenciaLink    String?
+  referencia2Lat    Float?
+  referencia2Lng    Float?
+  referencia2Link   String?
   assets            MemberAsset[]
   installmentPayments InstallmentPayment[]
   advancePayments   AdvancePayment[]
@@ -116,4 +135,20 @@ model AdvancePayment {
   createdAt       DateTime      @default(now())
 
   @@index([profileId, paymentDate])
+}
+
+/// Configuracion del plan de financiamiento (50% inicial + cuotas quincenales)
+/// por modelo de moto. El administrador edita el numero de cuotas y el monto de
+/// cada cuota a mano para cada modelo.
+model MotoFinancing {
+  id                String   @id @default(cuid())
+  motoSlug          String   @unique
+  motoNombre        String
+  precioBase        Float?
+  porcentajeInicial Float    @default(50)
+  cuotasQuincenales Int      @default(12)
+  montoCuota        Float?
+  activo            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }

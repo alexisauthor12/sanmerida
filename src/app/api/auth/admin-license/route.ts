@@ -4,64 +4,8 @@ import {
   ADMIN_ACCESS_COOKIE_NAME,
   createAdminAccessToken,
 } from "@/lib/auth";
-import { isBcryptHash } from "@/lib/security-helpers.mjs";
+import { getAdminSecurityConfig } from "@/lib/admin-config";
 import { getSessionUser } from "@/lib/session";
-
-function normalizeEnvValue(value?: string) {
-  return value?.trim().replace(/^['"]|['"]$/g, "") ?? "";
-}
-
-function getRequiredEnv(name: "ADMIN_USERNAME" | "ADMIN_LICENSE_HASH") {
-  const value = normalizeEnvValue(process.env[name]);
-
-  if (!value) {
-    if (process.env.NODE_ENV !== "production") {
-      // Safe defaults for local development only
-      if (name === "ADMIN_USERNAME") return "san-admin";
-      if (name === "ADMIN_LICENSE_HASH") return "$2b$12$0ff2PFYoM4dCVZj8/P6A8eHnbki5dx9sgaBz77fVq.zFp8qs4ZDc6"; // bcrypt(SAN-ADMIN-0001)
-    }
-    throw new Error(`${name} no está configurado.`);
-  }
-
-  return value;
-}
-
-function getAdminSecurityConfig() {
-  const username = getRequiredEnv("ADMIN_USERNAME");
-  const licenseHash = normalizeEnvValue(process.env.ADMIN_LICENSE_HASH);
-  const plainLicense = normalizeEnvValue(process.env.ADMIN_LICENSE ?? process.env.ADMIN_LICENSE_PLAIN);
-
-  if (licenseHash && isBcryptHash(licenseHash)) {
-    return {
-      username,
-      mode: "hash" as const,
-      value: licenseHash,
-    };
-  }
-
-  if (plainLicense) {
-    return {
-      username,
-      mode: "plain" as const,
-      value: plainLicense,
-    };
-  }
-
-  if (process.env.NODE_ENV !== "production") {
-    return {
-      username,
-      mode: "plain" as const,
-      value: "SAN-ADMIN-BF22F1962AF8D83C",
-    };
-  }
-
-  if (licenseHash) {
-    throw new Error("ADMIN_LICENSE_HASH no tiene un formato bcrypt válido.");
-  }
-
-  throw new Error("Falta ADMIN_LICENSE_HASH o ADMIN_LICENSE.");
-
-}
 
 type AdminPayload = {
   username?: string;
@@ -110,9 +54,9 @@ export async function POST(request: Request) {
   }
 
   const validLicense =
-    securityConfig.mode === "hash"
-      ? await bcrypt.compare(license, securityConfig.value)
-      : license === securityConfig.value;
+    securityConfig.licenseConfig.mode === "hash"
+      ? await bcrypt.compare(license, securityConfig.licenseConfig.value)
+      : license === securityConfig.licenseConfig.value;
 
   if (!validLicense) {
     return NextResponse.json(

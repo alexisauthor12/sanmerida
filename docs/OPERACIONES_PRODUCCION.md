@@ -19,6 +19,192 @@ Notas:
 - `DATABASE_URL` debe apuntar a Postgres productivo con TLS según proveedor.
 - `ADMIN_LICENSE_HASH` debe ser bcrypt valido (`$2a$`, `$2b$`, `$2y$`).
 - Rota `AUTH_SECRET` y `ADMIN_LICENSE_HASH` ante incidentes o cambios de personal.
+- `AUTH_SECRET` firma las sesiones (JWT) y ademas deriva la clave AES-256-GCM con
+  la que se cifran las credenciales de los miembros en el expediente. **Si cambia
+  `AUTH_SECRET`, las credenciales guardadas dejan de poder descifrarse** (se
+  vuelven a generar desde el panel) y todas las sesiones se invalidan.
+
+> Aviso local: en `.env.local` un hash bcrypt debe ir como variable de entorno
+> real (no solo en el archivo), porque Next expande los `$` al leer `.env*` y el
+> hash llega corrupto al servidor ("ADMIN_LICENSE_HASH no tiene formato bcrypt
+> valido"). En produccion esto no aplica: los secretos del Worker no pasan por
+> ese mecanismo.
+
+### 1.1) Almacenamiento de expedientes (Supabase Storage)
+
+Los documentos y contratos de los miembros (cedula, RIF, selfie, contratos) NO
+se guardan en el repositorio ni en `public/`: viven en un bucket **privado** y
+solo se entregan por el endpoint autenticado `/api/member-files/file`.
+
+```bash
+SUPABASE_URL="https://<proyecto>.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
+SUPABASE_STORAGE_BUCKET="member-documents"
+```
+
+Notas:
+- `SUPABASE_SERVICE_ROLE_KEY` es **secreta**: solo se usa en el servidor (nunca
+  en el cliente).
+- El bucket debe ser **privado** (sin politicas de lectura publica). La
+  aplicacion no usa URLs publicas: lee los objetos con la service role key y los
+  reenvia al cliente con sesion validada.
+- Si `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` no estan definidos, la app cae
+  al modo local (escribe en `public/uploads`), valido solo para desarrollo.
+- `public/uploads/` esta ignorado por Git: los expedientes reales nunca se
+  versionan.
+
+Creacion del bucket (una sola vez):
+
+```bash
+# Con Supabase CLI o desde el panel: Storage > New bucket > privado
+# Nombre: member-documents  (o el valor de SUPABASE_STORAGE_BUCKET)
+```
+
+### 1.2) Migrar expedientes existentes de `public/uploads` al bucket
+
+```bash
+# 1) Simulacion (no escribe nada)
+node scripts/migrate-uploads-to-storage.mjs
+
+# 2) Aplicar: sube los archivos y normaliza MemberAsset.filePath
+node scripts/migrate-uploads-to-storage.mjs --apply
+```
+
+El script sube cada archivo local con la misma clave (`uploads/members/...`),
+incluye los derivados del escaneo (`.pdf` y `.txt`) y normaliza las filas
+antiguas que guardaban la ruta con slash inicial.
+
+### 1.3) Dejar de versionar `public/uploads`
+
+```bash
+git rm -r --cached public/uploads
+git commit -m "Dejar de versionar expedientes de miembros"
+```
+
+Los archivos siguen en disco (solo se quitan del indice). Tras migrarlos al
+bucket se pueden borrar localmente.
+
+### 1.4) Blindaje de los documentos
+
+Capas de proteccion activas:
+
+1. **Bucket privado** (`member-documents`): sin politicas de lectura publica.
+   Los archivos nunca se sirven con URL publica.
+2. **Limites en el propio bucket** (Supabase rechaza lo que no cumpla, aunque la
+   app tuviera un fallo): maximo **20 MB** por archivo y solo estos tipos:
+   `image/jpeg`, `image/png`, `image/webp`, `image/bmp`, `image/tiff`,
+   `image/heic`, `image/heif`, `application/pdf`.
+   Para (re)aplicarlos: `node scripts/setup-supabase-storage.mjs`
+3. **Validacion en la app**: `/api/member-files/upload` rechaza formatos no
+   permitidos (por ejemplo `.exe`, `.html`, `.svg`) y archivos grandes.
+4. **Entrega solo con sesion**: `/api/member-files/file` responde `401` sin
+   sesion; un miembro solo puede leer su propio expediente. Ademas envia
+   `X-Content-Type-Options: nosniff`, `Content-Security-Policy` restrictiva y
+   `Cache-Control: no-store` (un documento borrado no se sirve desde cache).
+5. **Papelera**: al borrar o reemplazar un documento, el archivo se mueve a
+   `_papelera/<fecha>/...` en lugar de destruirse. Se puede recuperar desde el
+   panel de Supabase.
+
+Notas de seguridad:
+- La `SUPABASE_SERVICE_ROLE_KEY` es **secreta** (solo servidor) y vive como
+  secreto del Worker de Cloudflare. **Rotarla** si se comparte por un canal
+  inseguro (chat, correo) o al cambiar de personal.
+- Los documentos NO se versionan en Git (`public/uploads/` esta ignorado).
+
+### 1.5) Respaldo y verificacion de documentos
+
+```bash
+# Respaldo completo (documentos + manifiesto con las filas de la BD)
+node scripts/backup-documents.mjs
+node scripts/backup-documents.mjs D:\respaldos\sanmerida   # carpeta concreta
+
+# ¿Falta algun documento? (comparara base de datos contra el bucket)
+node scripts/check-storage-integrity.mjs
+
+# Vaciar la papelera de lo eliminado hace mas de 30 dias
+node scripts/purge-trash.mjs              # simulacion
+node scripts/purge-trash.mjs --apply      # aplica
+```
+
+Recomendaciones:
+- Ejecutar el respaldo **cada semana** y guardar la carpeta en la nube
+  (Drive/OneDrive) o en un disco externo. `backups/` esta ignorado por Git.
+- Ejecutar `check-storage-integrity.mjs` despues de cada respaldo: si reporta
+  `Documentos FALTANTES`, restaurar desde el ultimo respaldo.
+- La papelera conserva lo eliminado 30 dias por defecto (configurable).
+
+### 1.6) Credenciales de los miembros en el expediente
+
+Cada miembro tiene un usuario (`@nombre-apellido`) y una clave
+`SAN-MEMBER-XXXXXX`. Al registrar el expediente la clave se guarda:
+
+1. **Hasheada con bcrypt** en `User.passwordHash` (es lo que valida el login).
+2. **Cifrada con AES-256-GCM** en `MemberProfile.memberKeyCipher`, para que el
+   administrador pueda consultarla despues.
+
+Reglas de operacion:
+
+- La clave solo se descifra cuando la peticion tiene **licencia administrativa
+  valida** (`/api/monitor-cuotas`). Un miembro nunca la ve.
+- Para verla: **Panel admin > Monitor de cuotas > buscar la cedula > Expediente**.
+  Aparece la tarjeta "Credenciales de acceso" con usuario, clave y boton *Copiar*.
+- Si el miembro se registro **antes** de este cambio, su clave no esta guardada:
+  el expediente mostrara "Sin credencial guardada". El boton
+  **"Generar credenciales"** crea una clave nueva, la guarda y actualiza el acceso
+  del miembro (la anterior deja de funcionar).
+- Los cambios de esquema se aplican con `npx prisma db push`. Con Supabase usar el
+  **pooler de sesion (puerto 5432)**: el de transacciones (6543) bloquea el DDL.
+
+### 1.7) Videos del sitio y limite de assets de Cloudflare
+
+Cloudflare Workers acepta **maximo 25 MiB por archivo** de assets. Los videos del
+sitio superan ese tamano (hasta 133 MiB), asi que:
+
+- `scripts/exclude-large-assets.mjs` (parte de `npm run build:cf`) escribe
+  `.open-next/assets/.assetsignore` con todo archivo mayor a 25 MiB, para que el
+  despliegue no falle con `Asset too large`.
+- Los videos siguen en el repositorio y en `storage-videos/` (copia local
+  ignorada por Git): no se pierden, simplemente no se suben.
+- Solo se sirven los videos menores a 25 MiB (`sistemasan.mp4`, `MTT.mp4`,
+  `mp4video.mp4`, `IMG_2409.mp4`, `videocarru6nuevo.MOV`).
+
+> Nota de rendimiento: tener los videos pesados en `public/` hace que cada build
+> copie ~750 MB. Si se necesita un build rapido, moverlos a `storage-videos/`
+> (fuera de `public/`): el resultado del despliegue es el mismo.
+
+### 1.8) Financiamiento por modelo de moto (50% inicial + cuotas quincenales)
+
+Tercer plan de venta, ademas del de 26 y 83 cuotas:
+
+- **Inicial**: porcentaje configurable por modelo (50% por defecto).
+- **Pago**: cuotas cada **15 dias** (quincenal).
+- **Duracion y monto**: se configuran **por modelo de moto** y los define el
+  administrador a mano (control total).
+
+Donde se administra:
+
+- **Panel admin > "Financiamiento por modelo"**: tabla editable con precio base,
+  % inicial, nº de cuotas quincenales y monto por cuota de cada modelo. Muestra
+  en vivo el inicial, el saldo y la cuota sugerida (saldo ÷ cuotas) y avisa si el
+  monto manual cobra mas o menos que el saldo.
+- **Registro de miembro**: al elegir el plan *"Financiamiento 50% (quincenal)"* se
+  carga sola la configuracion del modelo elegido (inicial, nº de cuotas, monto y
+  duracion) y se muestra el desglose antes de guardar.
+- **Monitor de cuotas**: el plan se cuenta cada 15 dias con el nº de cuotas
+  guardado en el expediente (`MemberProfile.installmentCount`).
+
+Datos: `MotoFinancing` (configuracion por modelo) y `MemberProfile.installmentCount`
+(nº de cuotas del plan contratado). Se aplican con `npx prisma db push`.
+
+**Los financiados son individuales**: no pertenecen a ningun grupo operativo.
+
+- **Panel admin > "Financiados"**: lista solo a las personas cuyo plan es de
+  financiamiento, con su cuota quincenal, cuotas pagadas/total, saldo, estado y
+  proximo vencimiento. Los indicadores de arriba muestran cuantos son, el saldo
+  total por cobrar, las cuotas pendientes y cuantos estan con atraso.
+- El boton **"Abrir expediente"** de cada fila lleva al monitor de cuotas con esa
+  persona seleccionada y la pestaña **Expediente** abierta (documentos,
+  credenciales y detalle de cuotas).
 
 ## 2) Provisionar base de datos Postgres
 
@@ -50,6 +236,16 @@ npm run build
 npm run start
 ```
 
+### Despliegue a Cloudflare
+
+```bash
+npm run deploy:cf
+```
+
+> Importante: `deploy:cf` ya **compila y despliega** en un solo paso. Si se
+> despliega sin compilar, Cloudflare sube el `.open-next` anterior y los cambios
+> no llegan a produccion.
+
 ## 5) Test minimo antes de desplegar
 
 ```bash
@@ -75,6 +271,13 @@ npm run build
 
 ## 8) Backups y recuperacion
 
+Base de datos:
 - Snapshot diario de base de datos.
 - Retencion minima recomendada: 14 dias.
 - Verificar restauracion mensualmente en entorno de staging.
+
+Documentos (expedientes):
+- `node scripts/backup-documents.mjs` (documentos + manifiesto con las filas).
+- `node scripts/check-storage-integrity.mjs` para detectar faltantes.
+- `node scripts/purge-trash.mjs --apply` para vaciar la papelera (30 dias).
+- Guardar el respaldo fuera del equipo (nube o disco externo).
