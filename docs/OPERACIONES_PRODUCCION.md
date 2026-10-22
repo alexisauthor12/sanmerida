@@ -29,6 +29,31 @@ Notas:
 > hash llega corrupto al servidor ("ADMIN_LICENSE_HASH no tiene formato bcrypt
 > valido"). En produccion esto no aplica: los secretos del Worker no pasan por
 > ese mecanismo.
+>
+> Hallazgo adicional: `opennextjs-cloudflare` tambien hornea los valores de
+> `.dev.vars` en `.open-next/cloudflare/next-env.mjs`, y ahi el hash llega
+> **truncado** (se ve con menos de 60 caracteres). El Worker en produccion usa el
+> **secreto real** (`wrangler secret put`), por eso el login de admin funciona
+> igual. Consecuencia practica: **rotar la licencia requiere dos pasos**:
+>
+> 1. `node scripts/set-admin-license.mjs "NUEVA-LICENCIA"` (actualiza `.env.local`
+>    y `.dev.vars`).
+> 2. Publicar el hash en Cloudflare: `npx wrangler secret bulk <archivo.json>` con
+>    `{"ADMIN_LICENSE_HASH":"<hash>"}`, o `npx wrangler secret put
+>    ADMIN_LICENSE_HASH`, y luego `node scripts/deploy-cf.mjs`.
+>
+> El hash bcrypt de la licencia **no se puede revertir**: si se pierde la licencia
+> en claro, hay que rotarla (no se recupera del hash).
+
+### 1.6.bis) Datos de acceso del administrador
+
+- **Usuario admin**: `ADMIN_USERNAME` (en desarrollo por defecto `san-root-x9`).
+- **Cuenta admin**: `ADMIN_ACCOUNT_EMAIL` (por defecto `admin@sanmerida.com`).
+- **Licencia**: valor en claro que **no se guarda en ningun archivo**; en
+  produccion solo existe su hash bcrypt. Guardarla en el gestor de claves del
+  responsable (nunca en el chat ni en el repositorio).
+- Si se pierde la licencia, **no se puede recuperar**: hay que rotarla con los dos
+  pasos descritos arriba.
 
 ### 1.1) Almacenamiento de expedientes (Supabase Storage)
 
