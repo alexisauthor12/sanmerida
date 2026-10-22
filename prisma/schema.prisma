@@ -140,6 +140,27 @@ model AdvancePayment {
 /// Configuracion del plan de financiamiento (50% inicial + cuotas quincenales)
 /// por modelo de moto. El administrador edita el numero de cuotas y el monto de
 /// cada cuota a mano para cada modelo.
+
+/// Publicaciones del feed de la empresa (noticias y videos) que ven los miembros
+/// en su panel. Las administra el equipo desde el panel admin.
+model NewsPost {
+  id               String   @id @default(cuid())
+  titulo           String
+  resumen          String?
+  contenido        String?
+  categoria        String   @default("Corporativo")
+  imagenUrl        String?
+  videoUrl         String?
+  autor            String?
+  destacado        Boolean  @default(false)
+  publicado        Boolean  @default(true)
+  fechaPublicacion DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([publicado, fechaPublicacion])
+}
+
 model MotoFinancing {
   id                String   @id @default(cuid())
   motoSlug          String   @unique

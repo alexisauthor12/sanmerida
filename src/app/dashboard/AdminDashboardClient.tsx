@@ -26,6 +26,7 @@ import {
   CalendarClock,
   Phone,
   TriangleAlert,
+  Newspaper,
 } from "lucide-react";
 import {
   Bar,
@@ -130,6 +131,36 @@ type CuotaMonitorDocument = {
   archivo: string;
   variante?: string;
 };
+
+/** Publicacion del feed de la empresa (noticias y videos). */
+type AdminNewsPost = {
+  id: string;
+  titulo: string;
+  resumen: string;
+  contenido: string;
+  categoria: string;
+  imagenUrl: string;
+  videoUrl: string;
+  autor: string;
+  destacado: boolean;
+  publicado: boolean;
+  fecha: string;
+  fechaIso: string;
+};
+
+const NOVEDAD_VACIA = {
+  id: "",
+  titulo: "",
+  resumen: "",
+  contenido: "",
+  categoria: "Corporativo",
+  imagenUrl: "",
+  videoUrl: "",
+  destacado: false,
+  publicado: true,
+};
+
+const CATEGORIAS_NOVEDAD = ["Corporativo", "Modelos", "Promociones", "Pagos", "Eventos", "Video"];
 
 type CuotaMonitorProfile = {
   clientId: string;
@@ -1566,6 +1597,97 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
   // Aviso cuando los expedientes no se pudieron cargar (para no confundir con
   // "no hay expedientes": los datos NUNCA se eliminan solos).
   const [monitorLoadError, setMonitorLoadError] = useState("");
+
+  // Feed de la empresa: noticias y videos que ven los miembros.
+  const [newsPosts, setNewsPosts] = useState<AdminNewsPost[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState("");
+  const [newsMessage, setNewsMessage] = useState("");
+  const [newsSaving, setNewsSaving] = useState(false);
+  const [newsForm, setNewsForm] = useState({ ...NOVEDAD_VACIA });
+
+  const cargarNovedades = useCallback(async () => {
+    setNewsLoading(true);
+    setNewsError("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/noticias`, { cache: "no-store" });
+      const data = (await response.json()) as { ok?: boolean; posts?: AdminNewsPost[]; message?: string };
+
+      if (!response.ok || !data.ok) {
+        setNewsError(data.message || "No se pudieron cargar las novedades.");
+        return;
+      }
+
+      setNewsPosts(data.posts ?? []);
+    } catch {
+      setNewsError("No se pudo conectar con el servidor.");
+    } finally {
+      setNewsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSection === "novedades") void cargarNovedades();
+  }, [activeSection, cargarNovedades]);
+
+  const guardarNovedad = async (event: FormEvent) => {
+    event.preventDefault();
+    setNewsSaving(true);
+    setNewsMessage("");
+
+    try {
+      const editando = Boolean(newsForm.id);
+      const response = await fetch(`${API_BASE}/api/noticias`, {
+        method: editando ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newsForm),
+      });
+      const data = (await response.json()) as { ok?: boolean; message?: string };
+
+      if (!response.ok || !data.ok) {
+        setNewsMessage(data.message || "No se pudo guardar la novedad.");
+        return;
+      }
+
+      setNewsMessage(editando ? "Novedad actualizada." : "Novedad publicada.");
+      setNewsForm({ ...NOVEDAD_VACIA });
+      await cargarNovedades();
+    } catch {
+      setNewsMessage("No se pudo conectar con el servidor.");
+    } finally {
+      setNewsSaving(false);
+    }
+  };
+
+  const alternarPublicado = async (post: AdminNewsPost) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/noticias`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: post.id, publicado: !post.publicado }),
+      });
+
+      if (!response.ok) return;
+
+      await cargarNovedades();
+    } catch {
+      // Si falla, la lista queda igual: no se pierde nada.
+    }
+  };
+
+  const eliminarNovedad = async (post: AdminNewsPost) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/noticias?id=${encodeURIComponent(post.id)}`, { method: "DELETE" });
+
+      if (!response.ok) return;
+
+      setNewsMessage("Novedad eliminada.");
+      await cargarNovedades();
+    } catch {
+      // Idem: sin cambios si falla la conexion.
+    }
+  };
   const [monitorSearchLoading, setMonitorSearchLoading] = useState(false);
   const [monitorTab, setMonitorTab] = useState<"operaciones" | "expediente">("operaciones");
   const [monitorClientsData, setMonitorClientsData] = useState<CuotaMonitorClient[]>([]);
@@ -3113,6 +3235,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     { id: "financiamiento", label: "Financiamiento por modelo", icon: Wallet },
     { id: "financiados", label: "Financiados", icon: Users },
     { id: "contratos", label: "Contratos", icon: FileCheck2 },
+    { id: "novedades", label: "Novedades", icon: Newspaper },
     { id: "register-user", label: "Register user", icon: UserPlus },
   ] as const;
 
@@ -6353,6 +6476,251 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </section>
         )}
 
+        {activeSection === "novedades" && (
+          <section className="space-y-5">
+            <header className="rounded-2xl border border-zinc-200 bg-white p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">Feed de la empresa</p>
+              <h2 className="text-lg font-semibold text-zinc-900">Novedades y videos</h2>
+              <p className="text-sm text-zinc-500">
+                Publica noticias, promociones y videos: cada miembro los ve en su panel, en la pestaña «Novedades».
+              </p>
+            </header>
+
+            <div className="grid gap-5 xl:grid-cols-2">
+              <article className="rounded-2xl border border-zinc-200 bg-white p-5">
+                <h3 className="text-base font-semibold text-zinc-900">
+                  {newsForm.id ? "Editar novedad" : "Nueva novedad"}
+                </h3>
+
+                <form onSubmit={guardarNovedad} className="mt-4 space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                      Título
+                    </label>
+                    <input
+                      value={newsForm.titulo}
+                      onChange={(event) => setNewsForm({ ...newsForm, titulo: event.target.value })}
+                      placeholder="Ej: Nuevos modelos disponibles este mes"
+                      className="h-10 w-full rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                      Categoría
+                    </label>
+                    <select
+                      value={newsForm.categoria}
+                      onChange={(event) => setNewsForm({ ...newsForm, categoria: event.target.value })}
+                      className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-zinc-500"
+                    >
+                      {CATEGORIAS_NOVEDAD.map((categoria) => (
+                        <option key={categoria} value={categoria}>
+                          {categoria}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                      Resumen (una o dos líneas)
+                    </label>
+                    <textarea
+                      value={newsForm.resumen}
+                      onChange={(event) => setNewsForm({ ...newsForm, resumen: event.target.value })}
+                      rows={2}
+                      className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                      Contenido completo
+                    </label>
+                    <textarea
+                      value={newsForm.contenido}
+                      onChange={(event) => setNewsForm({ ...newsForm, contenido: event.target.value })}
+                      rows={5}
+                      className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
+                    />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                        Imagen (URL)
+                      </label>
+                      <input
+                        value={newsForm.imagenUrl}
+                        onChange={(event) => setNewsForm({ ...newsForm, imagenUrl: event.target.value })}
+                        placeholder="/videocarru3.mp4 o https://…"
+                        className="h-10 w-full rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                        Video (URL)
+                      </label>
+                      <input
+                        value={newsForm.videoUrl}
+                        onChange={(event) => setNewsForm({ ...newsForm, videoUrl: event.target.value })}
+                        placeholder="/videocarru2nuevo.mp4"
+                        className="h-10 w-full rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 text-sm text-zinc-700">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={newsForm.destacado}
+                        onChange={(event) => setNewsForm({ ...newsForm, destacado: event.target.checked })}
+                        className="h-4 w-4"
+                      />
+                      Destacada
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={newsForm.publicado}
+                        onChange={(event) => setNewsForm({ ...newsForm, publicado: event.target.checked })}
+                        className="h-4 w-4"
+                      />
+                      Publicada (visible para los miembros)
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={newsSaving}
+                      className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {newsSaving ? "Guardando…" : newsForm.id ? "Guardar cambios" : "Publicar novedad"}
+                    </button>
+                    {newsForm.id ? (
+                      <button
+                        type="button"
+                        onClick={() => setNewsForm({ ...NOVEDAD_VACIA })}
+                        className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                      >
+                        Cancelar edición
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {newsMessage ? <p className="text-xs font-semibold text-zinc-700">{newsMessage}</p> : null}
+                </form>
+              </article>
+
+              <article className="rounded-2xl border border-zinc-200 bg-white">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-5 py-3">
+                  <div>
+                    <h3 className="text-base font-semibold text-zinc-900">Publicaciones</h3>
+                    <p className="text-xs text-zinc-500">
+                      {newsPosts.length} en total · {newsPosts.filter((post) => post.publicado).length} publicadas
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void cargarNovedades()}
+                    className="rounded-xl border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                  >
+                    Actualizar
+                  </button>
+                </div>
+
+                <div className="space-y-3 p-5">
+                  {newsLoading ? (
+                    <p className="text-sm text-zinc-500">Cargando novedades…</p>
+                  ) : newsError ? (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                      {newsError}
+                    </div>
+                  ) : newsPosts.length === 0 ? (
+                    <p className="text-sm text-zinc-500">
+                      Todavía no hay novedades publicadas. Creá la primera con el formulario.
+                    </p>
+                  ) : (
+                    newsPosts.map((post) => (
+                      <div key={post.id} className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="rounded-full bg-zinc-200 px-2 py-0.5 font-semibold text-zinc-700">
+                                {post.categoria}
+                              </span>
+                              {post.destacado ? (
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
+                                  Destacado
+                                </span>
+                              ) : null}
+                              <span
+                                className={
+                                  post.publicado
+                                    ? "rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700"
+                                    : "rounded-full bg-zinc-200 px-2 py-0.5 font-semibold text-zinc-600"
+                                }
+                              >
+                                {post.publicado ? "Publicada" : "Borrador"}
+                              </span>
+                              <span className="text-zinc-500">{post.fecha}</span>
+                            </div>
+                            <p className="mt-1 text-sm font-semibold text-zinc-900">{post.titulo}</p>
+                            {post.resumen ? <p className="mt-1 text-xs text-zinc-600">{post.resumen}</p> : null}
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {post.imagenUrl ? "Con imagen" : ""}
+                              {post.imagenUrl && post.videoUrl ? " · " : ""}
+                              {post.videoUrl ? "Con video" : ""}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setNewsForm({
+                                  id: post.id,
+                                  titulo: post.titulo,
+                                  resumen: post.resumen,
+                                  contenido: post.contenido,
+                                  categoria: post.categoria,
+                                  imagenUrl: post.imagenUrl,
+                                  videoUrl: post.videoUrl,
+                                  destacado: post.destacado,
+                                  publicado: post.publicado,
+                                })
+                              }
+                              className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void alternarPublicado(post)}
+                              className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                            >
+                              {post.publicado ? "Despublicar" : "Publicar"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void eliminarNovedad(post)}
+                              className="rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </article>
+            </div>
+          </section>
+        )}
+
         {activeSection === "register-user" && (
         <section id="register-user-panel" className="space-y-4 scroll-mt-24">
           <article className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -6435,7 +6803,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </main>
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 z-30 grid grid-cols-7 gap-1 border-t border-zinc-200 bg-white p-2 lg:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 grid grid-cols-8 gap-1 border-t border-zinc-200 bg-white p-2 lg:hidden">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;

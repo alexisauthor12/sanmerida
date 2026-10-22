@@ -203,9 +203,12 @@ en todos los navegadores (Chrome/Android). Por eso:
 `.open-next/assets/.assetsignore` con todo archivo mayor a 25 MiB, para que el
 despliegue no falle con `Asset too large`.
 
-> Nota de rendimiento: tener los videos pesados en `public/` hace que cada build
-> copie ~750 MB. Si se necesita un build rapido, moverlos a `storage-videos/`
-> (fuera de `public/`): el resultado del despliegue es el mismo.
+> Rendimiento: los videos que superan el limite de 25 MiB (los `.MOV` originales y
+> `videocarru1.*`, ~700 MB) **ya no estan en `public/`**: viven en
+> `storage-videos/originales/` (carpeta local ignorada por Git; siguen en el
+> historial de Git/LFS). `public/` quedo en ~120 MB y el build baja de ~13 min a
+> ~3-4 min. Para rehacer un video comprimido, copiar el original de vuelta a
+> `public/` y ejecutar `scripts/compress-catalog-videos.mjs`.
 
 ### 1.8) Financiamiento por modelo de moto (50% inicial + cuotas quincenales)
 
@@ -256,6 +259,35 @@ Como funciona:
   concreto con `?cedula=` y su licencia validada (403 sin licencia).
 - Los calculos de cuotas salen de **`src/lib/installment-schedule.mjs`**, el mismo
   modulo que usa el monitor de cuotas del panel admin: asi las cifras del miembro
+
+### 1.10) Feed de novedades (noticias y videos) para los miembros
+
+El miembro ve en su panel la pestaña **Novedades**: las publicaciones que hace el
+equipo (noticias, promociones, avisos) y los videos de la empresa.
+
+Donde se administra:
+
+- **Panel admin > "Novedades"**: formulario para publicar (titulo, categoria,
+  resumen, contenido completo, imagen y video opcionales, destacada, publicada) y
+  lista de publicaciones con *Editar*, *Publicar/Despublicar* y *Eliminar*.
+- **Panel del miembro > Novedades**: tarjetas con la noticia, boton *Leer completo*
+  (lector en ventana) y *Ver video* (reproductor). Al costado, la lista de videos
+  institucionales y un acceso a contacto.
+
+Como funciona:
+
+- Tabla `NewsPost` (titulo, resumen, contenido, categoria, imagenUrl, videoUrl,
+  autor, destacado, publicado, fechaPublicacion). Se aplica con `npx prisma db push`
+  (usar el pooler de sesion 5432).
+- Endpoint `/api/noticias`:
+  - `GET`: el miembro solo recibe las **publicadas**; el equipo con licencia
+    validada tambien ve los **borradores**.
+  - `POST` / `PATCH` / `DELETE`: requieren sesion del equipo **y** licencia
+    administrativa validada (403 en caso contrario).
+- La imagen y el video se indican por URL: se pueden usar los archivos ya servidos
+  del sitio (`/videocarru2nuevo.mp4`, `/sistemasan.mp4`, …) o cualquier URL externa.
+- `public/` no contiene videos pesados: ver la nota de rendimiento en la seccion 1.7.
+
   y las del administrador **nunca se separan**. Tiene pruebas en
   `tests/installment-schedule.test.mjs`.
 - Los archivos se sirven por `/api/member-files/file`, que solo entrega documentos
