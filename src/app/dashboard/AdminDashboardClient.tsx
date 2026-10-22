@@ -128,6 +128,7 @@ type CuotaMonitorDocument = {
   tipo: string;
   fecha: string;
   archivo: string;
+  variante?: string;
 };
 
 type CuotaMonitorProfile = {
@@ -3920,14 +3921,14 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                   <article className="rounded-2xl border border-zinc-200 bg-white">
                     <div className="border-b border-zinc-200 px-4 py-3">
                       <h4 className="text-base font-semibold text-zinc-900">Documentos y soportes</h4>
-                      <p className="text-sm text-zinc-500">Respaldo documental del expediente, uno por uno.</p>
+                      <p className="text-sm text-zinc-500">Un registro por tipo de documento del expediente.</p>
                     </div>
                     <div className="space-y-3 p-4">
-                      {documentosComplementarios.map((doc, index) => (
+                      {documentosComplementarios.map((doc) => (
                         <div key={doc.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                             <div>
-                              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Documento {index + 1}</p>
+                              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">{doc.tipo}</p>
                               <p className="text-sm font-semibold text-zinc-900">{doc.nombre}</p>
                             </div>
                             <span className="text-xs font-medium text-zinc-500">{doc.fecha}</span>
@@ -3935,7 +3936,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
                           <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
                             <Image src={doc.archivo} alt={doc.nombre} width={320} height={220} unoptimized className="h-28 w-full rounded-xl border border-zinc-200 bg-white object-cover" />
                             <div className="grid gap-2 text-sm text-zinc-700">
-                              <p><span className="font-semibold text-zinc-900">Tipo:</span> {doc.tipo}</p>
+                              <p><span className="font-semibold text-zinc-900">Tipo:</span> {doc.tipo}{doc.variante ? ` · ${doc.variante}` : ""}</p>
                               <p>Documento archivado y validado dentro del expediente consultado.</p>
                               <a href={doc.archivo} target="_blank" rel="noreferrer" className="inline-flex text-xs font-semibold text-sky-700 hover:underline">Abrir documento completo</a>
                             </div>

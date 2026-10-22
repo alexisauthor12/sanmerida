@@ -233,6 +233,37 @@ Datos: `MotoFinancing` (configuracion por modelo) y `MemberProfile.installmentCo
 
 **Los financiados son individuales**: no pertenecen a ningun grupo operativo.
 
+### 1.9) Panel del miembro (`/dashboard`)
+
+Cuando inicia sesion un usuario con `isMember = true`, `/dashboard` muestra su
+propio panel con datos reales (antes era una maqueta con cifras de ejemplo):
+
+- **Resumen**: cuotas pagadas / pendientes / vencidas, saldo pendiente, avance del
+  plan, proxima cuota (con recargo por mora si aplica), su moto, su plan y su
+  ubicacion registrada.
+- **Mis cuotas**: calendario completo con numero, vencimiento, monto, recargo y
+  estado (Pagada / Vencida / Por vencer / Pendiente).
+- **Mis pagos**: pagos de cuotas y abonos registrados (fecha, banco, metodo,
+  referencia).
+- **Documentos**: un registro por tipo (cedula, RIF, licencia, certificado de
+  origen, selfie) y los contratos, con enlace al endpoint protegido.
+- **Mis datos**: nombre, cedula, correo, telefono, ocupacion, empresa, direccion.
+
+Como funciona:
+
+- Endpoint **`GET /api/member-panel`**: devuelve **solo** el expediente del propio
+  miembro autenticado. El personal administrativo puede consultar un expediente
+  concreto con `?cedula=` y su licencia validada (403 sin licencia).
+- Los calculos de cuotas salen de **`src/lib/installment-schedule.mjs`**, el mismo
+  modulo que usa el monitor de cuotas del panel admin: asi las cifras del miembro
+  y las del administrador **nunca se separan**. Tiene pruebas en
+  `tests/installment-schedule.test.mjs`.
+- Los archivos se sirven por `/api/member-files/file`, que solo entrega documentos
+  del expediente cuyo `userId` coincide con el del miembro.
+- Si la carga falla, el panel avisa y ofrece **Reintentar** (nunca muestra una
+  pantalla vacia sin explicacion).
+
+
 - **Panel admin > "Financiados"**: lista solo a las personas cuyo plan es de
   financiamiento, con su cuota quincenal, cuotas pagadas/total, saldo, estado y
   proximo vencimiento. Los indicadores de arriba muestran cuantos son, el saldo

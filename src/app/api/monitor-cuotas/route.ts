@@ -3,6 +3,15 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { buildAssetUrl } from "@/lib/asset-paths.mjs";
 import {
+  buildInstallments,
+  buildPaidAmountMap,
+  normalizeMoney,
+  parseIsoOrNow,
+  resolveInstallmentTotal,
+  resolveIntervalDays,
+  toDmy,
+} from "@/lib/installment-schedule.mjs";
+import {
   decryptMemberKey,
   encryptMemberKey,
   generateMemberKey,
@@ -53,6 +62,8 @@ type MonitorDocument = {
   tipo: string;
   fecha: string;
   archivo: string;
+  /** "Digitalizado" si se sirve el escaneo generado; "Original" si es el archivo subido. */
+  variante?: string;
 };
 
 type MonitorProfile = {
@@ -211,62 +222,11 @@ function calculateAdvanceMaxAmount(params: { installmentTotal: number; alreadyAd
   return Math.max(0, normalizeMoney(Math.min(lessThanFullCap, safetyCap)));
 }
 
-function toDmy(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  const date = typeof value === "string" ? new Date(value) : value;
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-VE", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(date);
-}
+// Las funciones de calendario de cuotas (toDmy, parseIsoOrNow, normalizeMoney,
+// resolveInstallmentTotal, resolveIntervalDays, buildPaidAmountMap y
+// buildInstallments) viven en `src/lib/installment-schedule.mjs` para que el
+// panel del miembro y el monitor usen exactamente los mismos calculos.
 
-function parseIsoOrNow(value?: string | null) {
-  if (!value) return new Date();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return new Date();
-  return date;
-}
-
-function addDays(base: Date, days: number) {
-  const next = new Date(base);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function normalizeMoney(value: number) {
-  return Number(value.toFixed(2));
-}
-
-function resolveInstallmentTotal(
-  planName: string | null | undefined,
-  termMonths: number | null | undefined,
-  installmentCount?: number | null,
-) {
-  // El plan de financiamiento guarda su nº exacto de cuotas (viene del modelo).
-  if (installmentCount && installmentCount > 0) {
-    return installmentCount;
-  }
-
-  const normalizedPlan = String(planName ?? "").toLowerCase();
-  if (normalizedPlan.includes("83")) {
-    return 83;
-  }
-
-  if (normalizedPlan.includes("26")) {
-    return 26;
-  }
-
-  return Math.max(termMonths ?? 26, 1);
-}
-
-function parseDateInput(value?: string | null) {
-  if (!value) return new Date();
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return new Date();
-  return parsed;
-}
 
 /**
  * Resuelve la URL protegida del archivo de un expediente. Los documentos ya no
@@ -288,90 +248,9 @@ function findAssetPath(
   return filePath ? buildAssetUrl(filePath) : FALLBACK_IMAGE;
 }
 
-/**
- * Días entre cuotas según el plan:
- *  - Plan de 83 cuotas ("Ciclón") => SEMANAL (7 días)
- *  - Plan de 26 cuotas            => QUINCENAL (15 días)
- */
-/**
- * Dias entre cuotas segun el plan:
- *  - Plan de 83 cuotas ("Ciclon")  => SEMANAL (7 dias)
- *  - Financiamiento 50% y 26 cuotas => QUINCENAL (15 dias)
- */
-function resolveIntervalDays(planName: string | null | undefined, total: number) {
-  const normalizedPlan = String(planName ?? "").toLowerCase();
+// (resolveIntervalDays, buildPaidAmountMap y buildInstallments ya no se definen
+// aqui: se importan de `src/lib/installment-schedule.mjs`.)
 
-  if (normalizedPlan.includes("financ")) {
-    return 15;
-  }
-
-  if (total >= 83 || normalizedPlan.includes("83") || normalizedPlan.includes("cicl")) {
-    return 7;
-  }
-
-  return 15;
-}
-
-/** Suma los pagos por número de cuota (permite pagos parciales). */
-function buildPaidAmountMap(payments: Array<{ installmentNumber: number; amount: number }>) {
-  const map = new Map<number, number>();
-
-  for (const payment of payments) {
-    map.set(
-      payment.installmentNumber,
-      normalizeMoney((map.get(payment.installmentNumber) ?? 0) + payment.amount),
-    );
-  }
-
-  return map;
-}
-
-function buildInstallments(params: {
-  clientId: string;
-  cuotaMensual: number;
-  total: number;
-  startDate: Date;
-  intervalDays: number;
-  paidAmountByNumber: Map<number, number>;
-}) {
-  const now = new Date();
-
-  return Array.from({ length: params.total }, (_, index) => {
-    const numero = index + 1;
-    const dueDate = addDays(params.startDate, index * params.intervalDays);
-    const dueTs = dueDate.getTime();
-    const nowTs = now.getTime();
-    const paidAmount = params.paidAmountByNumber.get(numero) ?? 0;
-    // Solo es "Pagada" cuando el monto cubre la cuota completa (soporta pagos parciales).
-    const isPaid = paidAmount + 0.01 >= params.cuotaMensual;
-
-    let estado: "Pendiente" | "Vencida" | "Por vencer" | "Pagada" = "Pendiente";
-
-    const lateDays = (nowTs - dueTs) / (1000 * 60 * 60 * 24);
-
-    if (isPaid) {
-      estado = "Pagada";
-    } else if (lateDays > 30) {
-      estado = "Vencida";
-    } else if (lateDays > 20) {
-      estado = "Por vencer";
-    }
-
-    const recargo = estado === "Vencida" ? Number((params.cuotaMensual * 0.08).toFixed(2)) : 0;
-
-    return {
-      id: `${params.clientId}-cuota-${numero}`,
-      clientId: params.clientId,
-      semana: numero,
-      numero,
-      tipo: estado === "Vencida" ? "Fuera de semana" : "Regular",
-      vence: toDmy(dueDate),
-      monto: params.cuotaMensual,
-      recargo,
-      estado,
-    } satisfies MonitorInstallment;
-  });
-}
 
 async function mapProfile(
   profile: {
@@ -484,14 +363,69 @@ async function mapProfile(
   const nextDue = installments.find((item) => item.estado !== "Pagada")?.vence ?? "—";
   const estado: MonitorClient["estado"] = cuotasVencidas >= 3 ? "Riesgo" : cuotasVencidas > 0 ? "Con atraso" : "Al día";
 
-  const documents: MonitorDocument[] = profile.assets
-    .filter((asset) => asset.assetType === "DOCUMENT")
-    .map((asset) => ({
+  // Un expediente guarda hasta DOS archivos por documento: el original subido
+  // (NORMAL) y el escaneo generado (SCANNED). Antes se listaban los dos y con el
+  // nombre tecnico ("Documento selfie"). Ahora el panel muestra UNA fila por tipo
+  // de documento, con nombre legible y prefiriendo la version digitalizada.
+  const NOMBRES_DOCUMENTO: Record<string, string> = {
+    identidad: "Cédula de identidad",
+    rif: "RIF",
+    licencia: "Licencia de conducir",
+    "certificado-origen": "Certificado de origen",
+    selfie: "Selfie de validación",
+  };
+
+  const TIPOS_DOCUMENTO: Record<string, string> = {
+    identidad: "Identificación",
+    selfie: "Identificación",
+    rif: "Tributario",
+    licencia: "Personal",
+    "certificado-origen": "Vehículo",
+  };
+
+  const ORDEN_DOCUMENTO = ["identidad", "rif", "licencia", "certificado-origen", "selfie"];
+
+  const documentosPorTipo = new Map<string, (typeof profile.assets)[number]>();
+
+  for (const asset of profile.assets) {
+    if (asset.assetType !== "DOCUMENT") continue;
+
+    const clave = asset.documentKey.trim().toLowerCase();
+    const actual = documentosPorTipo.get(clave);
+
+    if (!actual) {
+      documentosPorTipo.set(clave, asset);
+      continue;
+    }
+
+    const puntajeActual = actual.variant === "SCANNED" ? 1 : 0;
+    const puntajeCandidato = asset.variant === "SCANNED" ? 1 : 0;
+
+    if (
+      puntajeCandidato > puntajeActual ||
+      (puntajeCandidato === puntajeActual && asset.createdAt.getTime() > actual.createdAt.getTime())
+    ) {
+      documentosPorTipo.set(clave, asset);
+    }
+  }
+
+  const documents: MonitorDocument[] = [...documentosPorTipo.entries()]
+    .sort(([claveA], [claveB]) => {
+      const posicionA = ORDEN_DOCUMENTO.indexOf(claveA);
+      const posicionB = ORDEN_DOCUMENTO.indexOf(claveB);
+
+      return (
+        (posicionA === -1 ? ORDEN_DOCUMENTO.length : posicionA) -
+        (posicionB === -1 ? ORDEN_DOCUMENTO.length : posicionB)
+      );
+    })
+    .map(([clave, asset]) => ({
       id: asset.id,
-      nombre: `Documento ${asset.documentKey}`,
-      tipo: asset.documentKey === "rif" ? "Tributario" : asset.documentKey === "identidad" ? "Identificación" : "Soporte",
+      nombre: NOMBRES_DOCUMENTO[clave] ?? clave.replace(/-/g, " ").replace(/^\w/, (letra) => letra.toUpperCase()),
+      tipo: TIPOS_DOCUMENTO[clave] ?? "Soporte",
       fecha: toDmy(asset.createdAt),
       archivo: buildAssetUrl(asset.filePath),
+      variante: asset.variant === "SCANNED" ? "Digitalizado" : "Original",
     }));
 
   const contracts: MonitorContract[] = profile.assets
@@ -794,7 +728,7 @@ export async function POST(request: Request) {
     const bank = String(body.bank ?? "").trim();
     const method = String(body.method ?? "").trim();
     const note = String(body.note ?? "").trim();
-    const paymentDate = parseDateInput(body.paymentDate ?? undefined);
+    const paymentDate = parseIsoOrNow(body.paymentDate ?? undefined);
     const installmentNumber = Number(body.installmentNumber ?? 0);
 
     fallbackPayload = {
