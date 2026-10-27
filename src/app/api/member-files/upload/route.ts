@@ -11,6 +11,7 @@ import {
 import { requirePermission } from "@/lib/api-guard";
 import { deleteAssetObject, saveAssetObject } from "@/lib/asset-storage";
 import { labelExpediente, recordAudit } from "@/lib/audit";
+import { validateFileSignature } from "@/lib/file-signature.mjs";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -472,6 +473,16 @@ export async function POST(request: Request) {
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  // La extension y el `Content-Type` los controla quien sube el archivo: se
+  // comprueba el CONTENIDO real (magic bytes) para que un archivo no pueda mentir
+  // sobre su tipo.
+  const firma = validateFileSignature(bytes, { fileName: file.name, mimeType: file.type });
+
+  if (!firma.ok) {
+    return NextResponse.json({ ok: false, message: firma.message }, { status: 400 });
+  }
+
   let fileKey: string;
 
   try {
@@ -558,6 +569,16 @@ export async function POST(request: Request) {
 
   if (variant === "SCANNED" && pdfPart instanceof File && pdfPart.size > 0) {
     const pdfBytes = Buffer.from(await pdfPart.arrayBuffer());
+
+    // Mismo control que el archivo principal: el PDF adjunto debe ser un PDF real.
+    const firmaPdf = validateFileSignature(pdfBytes, {
+      fileName: pdfPart.name,
+      mimeType: pdfPart.type,
+    });
+
+    if (!firmaPdf.ok) {
+      return NextResponse.json({ ok: false, message: firmaPdf.message }, { status: 400 });
+    }
 
     if (pdfBytes.length > MAX_ASSET_UPLOAD_BYTES) {
       return NextResponse.json({ ok: false, message: "El PDF digital supera el tamaño permitido." }, { status: 400 });
