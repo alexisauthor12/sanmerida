@@ -559,6 +559,39 @@ el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
 > (ver 9.10), así que este runbook se puede aplicar tal cual: solo hay que sustituir
 > `TU-DOMINIO` por `sanmeridajz.com`.
 
+**Script que lo aplica solo** (recomendado; evita equivocarse en el panel):
+
+```powershell
+node scripts/configurar-cloudflare.mjs            # simulacro: dice que haria
+node scripts/configurar-cloudflare.mjs --apply    # aplica
+```
+
+Hace los cuatro pasos: registro `www`, redireccion 301 al apex, las dos reglas del WAF y
+la aplicacion de Access. Es **idempotente** (si algo ya existe, lo dice y no lo toca) y
+**nunca sobrescribe**: lee el ruleset antes, comprueba si su regla esta, y la anade. Si no
+puede leerlo, se niega a escribir en vez de arriesgarse a borrar lo que hubiera.
+
+Necesita `CLOUDFLARE_API_TOKEN` con:
+
+| Ambito | Permiso | Para que |
+|---|---|---|
+| Zone → DNS | Edit | registro `www` |
+| Zone → Config Rules | Edit | redireccion y reglas |
+| Zone → Zone WAF | Edit | reglas del WAF |
+| Zone → Zone | Read | leer la zona |
+| Account → Access: Apps and Policies | Edit | aplicacion de Access |
+
+Y para la politica de Access, a quien se le permite entrar:
+
+```powershell
+$env:ACCESS_EMAILS = "uno@dominio.com,dos@dominio.com"
+```
+
+> **Access necesita un paso manual previo.** El 27/10/2026 la API respondio
+> `access.api.error.not_enabled`: Zero Trust **no esta activado** en la cuenta. Hay que
+> entrar una vez en el panel (*Zero Trust* → elegir nombre de equipo → plan Free). Hasta
+> entonces, el script omite ese paso con un aviso y aplica los otros tres igual.
+
 **WAF (gratuito en el plan Free):**
 
 1. Panel de Cloudflare -> *Security* -> *WAF* -> *Custom rules*.
