@@ -5,7 +5,9 @@ import {
   createAdminAccessToken,
 } from "@/lib/auth";
 import { getAdminSecurityConfig } from "@/lib/admin-config";
+import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { getSessionUser } from "@/lib/session";
 
 type AdminPayload = {
@@ -45,6 +47,20 @@ export async function POST(request: Request) {
       { ok: false, message: "Ingresa el usuario de administrador y la licencia." },
       { status: 400 }
     );
+  }
+
+  // La licencia es el step-up del sistema: limite estricto por IP y por usuario.
+  const limite = await checkRateLimit("license", { request, identity: username });
+
+  if (!limite.allowed) {
+    await recordAudit({
+      action: "RATE_LIMIT_BLOCK",
+      metadata: { endpoint: "license" },
+      success: false,
+      request,
+    });
+
+    return tooManyRequests(limite.retryAfterSeconds);
   }
 
   if (username !== securityConfig.username) {

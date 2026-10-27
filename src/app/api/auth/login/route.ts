@@ -2,7 +2,9 @@ import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { createSessionToken, AUTH_COOKIE_NAME } from "@/lib/auth";
 import type { Role } from "@/lib/authz.mjs";
+import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { normalizeMemberUsername } from "@/lib/security-helpers.mjs";
 
 type LoginPayload = {
@@ -112,6 +114,24 @@ export async function POST(request: Request) {
   const password = body.password ?? "";
   const encryptedKey = body.encryptedKey ?? "";
   const credential = portal === "member" ? encryptedKey : password;
+
+  // Rate limiting antes de tocar la base de datos: frena la fuerza bruta y el
+  // credential stuffing. Se limita por IP y por identidad.
+  const limite = await checkRateLimit("login", {
+    request,
+    identity: portal === "member" ? normalizedUsername : email,
+  });
+
+  if (!limite.allowed) {
+    await recordAudit({
+      action: "RATE_LIMIT_BLOCK",
+      metadata: { endpoint: "login", portal },
+      success: false,
+      request,
+    });
+
+    return tooManyRequests(limite.retryAfterSeconds);
+  }
 
   if (portal === "member" && (!username || !credential)) {
     return NextResponse.json(

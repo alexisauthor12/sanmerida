@@ -24,6 +24,15 @@
     "SUPABASE_URL": "https://qtckdjyjdxzvxcnqusmv.supabase.co",
     "SUPABASE_STORAGE_BUCKET": "member-documents"
   },
+  // Rate limiting en produccion: los Workers no comparten memoria entre
+  // instancias, asi que el contador vive en KV. Sin este binding,
+  // `lib/rate-limit.ts` cae a un contador en memoria (util solo para local).
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT",
+      "id": "33bcc4c366ed45ae8debf76949bac4e9"
+    }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
