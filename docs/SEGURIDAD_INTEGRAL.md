@@ -8,7 +8,26 @@ Diseno tecnico del sistema de seguridad. Es la **especificacion** que se
 implementa por fases (seccion 11). Cada seccion indica el estado actual, el
 estado objetivo y el cambio concreto por archivo.
 
-> Estado: **propuesta para aprobacion**. No hay cambios de codigo aplicados.
+> **Estado de implementacion** (actualizado tras la Fase 0):
+>
+> | Elemento | Estado |
+> |---|---|
+> | Rol `PROSPECT` / `MEMBER` / `ADMIN` | **Aplicado en produccion** (4 cuentas migradas) |
+> | Guard unico de autorizacion | **Aplicado**: todas las rutas de `/api/**` pasan por el |
+> | Fuga de expedientes y documentos (hallazgo B) | **Cerrada** |
+> | Secreto de firma fail-closed (hallazgo C) | **Cerrado** |
+> | `admin-direct-login` (hallazgo D) | **Eliminado** |
+> | Rate limiting (hallazgo E) | **Activo** (namespace KV `RATE_LIMIT` creado) |
+> | TLS sin validar (hallazgo F) | **Cerrado** en `register` (pasa a Prisma/Hyperdrive) |
+> | Cabeceras de seguridad (hallazgo G) | **Aplicadas** (CSP en modo Report-Only) |
+> | Auditoria (hallazgo H) | **Aplicada**; falta el panel de consulta |
+> | Revocacion de sesiones (hallazgo I) | **Aplicada** (`tokenVersion`) |
+> | Enumeracion de cedulas (hallazgo J) | Mitigada (la ruta exige ADMIN) |
+> | Errores crudos de BD (hallazgo K) | **Cerrado** |
+> | Dependencias (hallazgo L) | **Pendiente** (`npm audit`) |
+>
+> La prueba `tests/api-guard-coverage.test.mjs` mantiene la deuda en **cero**:
+> cualquier ruta nueva sin guard rompe el build.
 
 ## Indice
 
