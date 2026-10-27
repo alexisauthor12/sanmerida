@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import AvisoTratamientoDatos from "@/app/components/AvisoTratamientoDatos";
 
 const API_BASE =
   typeof window !== "undefined" && window.location.hostname === "localhost"
@@ -34,6 +35,9 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  // Consentimiento del aviso de tratamiento de datos: obligatorio para crear la
+  // cuenta (docs/SEGURIDAD_INTEGRAL.md 10.2, punto 6).
+  const [consentimiento, setConsentimiento] = useState(false);
 
   const handleChange = (field: keyof RegisterForm, value: string) => {
     setError("");
@@ -65,13 +69,18 @@ export default function RegisterPage() {
       return;
     }
 
+    if (!consentimiento) {
+      setError("Debes aceptar el aviso de tratamiento de datos para continuar.");
+      return;
+    }
+
     setLoading(true);
 
     try {
       const response = await fetch(`${API_BASE}/api/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, consentimiento }),
       });
 
       const data = (await response.json()) as { ok: boolean; message: string };
@@ -194,12 +203,21 @@ export default function RegisterPage() {
                 />
               </div>
 
+              <AvisoTratamientoDatos
+                aceptado={consentimiento}
+                onChange={(valor) => {
+                  setConsentimiento(valor);
+                  setError("");
+                }}
+                tono="oscuro"
+              />
+
               {error ? <p className="text-sm text-red-300/95">{error}</p> : null}
               {success ? <p className="text-sm text-emerald-300/95">{success}</p> : null}
 
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !consentimiento}
                 className="inline-flex items-center rounded-full bg-white px-6 py-2.5 text-sm font-semibold text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {loading ? "Registrando..." : "Crear cuenta"}

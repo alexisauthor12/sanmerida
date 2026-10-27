@@ -209,6 +209,8 @@ async function main() {
     payLater: true,
     username: TEST_USERNAME,
     encryptedKey: TEST_KEY,
+    // El registro exige consentimiento del aviso de tratamiento de datos.
+    consentimiento: true,
   };
 
   const registerResponse = await fetch(`${BASE}/api/auth/register-member`, {

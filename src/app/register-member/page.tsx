@@ -14,6 +14,7 @@ import { buildScannedPdf, detectFaceCropFromImage, fetchAssetBlob, scanImageBlob
 import { FINANCING_PLAN_NAME, computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
 import LocationField from "@/app/components/LocationField";
 import SavedLocationPreview from "@/app/components/SavedLocationPreview";
+import AvisoTratamientoDatos from "@/app/components/AvisoTratamientoDatos";
 
 type MemberOnboardingForm = {
   nombre: string;
@@ -243,6 +244,10 @@ export default function RegisterMemberPage() {
   const [success, setSuccess] = useState("");
   const [registrationCompleted, setRegistrationCompleted] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Consentimiento del aviso de tratamiento de datos (docs/SEGURIDAD_INTEGRAL.md
+  // 10.2, punto 6). Se pide en el ultimo paso, antes de crear la cuenta: el
+  // expediente guarda cedula, direccion, ubicacion y documentos del titular.
+  const [consentimiento, setConsentimiento] = useState(false);
   const [assets, setAssets] = useState<Record<string, AssetRecord>>({});
   // Configuracion de financiamiento por modelo (precio, inicial, cuotas, monto).
   const [financingBySlug, setFinancingBySlug] = useState<Record<string, FinancingModel>>({});
@@ -1019,6 +1024,11 @@ export default function RegisterMemberPage() {
       return;
     }
 
+    if (!consentimiento) {
+      setError("Debes confirmar el aviso de tratamiento de datos antes de registrar.");
+      return;
+    }
+
     setLoading(true);
     setError("");
     setSuccess("");
@@ -1045,6 +1055,7 @@ export default function RegisterMemberPage() {
           referenciaLng: form.referenciaLng ? Number(form.referenciaLng) : undefined,
           referencia2Lat: form.referencia2Lat ? Number(form.referencia2Lat) : undefined,
           referencia2Lng: form.referencia2Lng ? Number(form.referencia2Lng) : undefined,
+          consentimiento,
         }),
       });
 
@@ -1986,6 +1997,18 @@ export default function RegisterMemberPage() {
               </button>
             ) : null}
 
+            {step === 5 && !registrationCompleted ? (
+              <div className="mt-5">
+                <AvisoTratamientoDatos
+                  aceptado={consentimiento}
+                  onChange={(valor) => {
+                    setConsentimiento(valor);
+                    setError("");
+                  }}
+                />
+              </div>
+            ) : null}
+
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
               <button type="button" onClick={goBack} disabled={step === 1} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm disabled:opacity-40">
                 Anterior
@@ -1996,7 +2019,7 @@ export default function RegisterMemberPage() {
                   Siguiente
                 </button>
               ) : (
-                <button type="button" onClick={handleSubmit} disabled={loading} className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70">
+                <button type="button" onClick={handleSubmit} disabled={loading || !consentimiento} className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70">
                   {loading ? "Registrando miembro..." : "Finalizar registro"}
                 </button>
               )}

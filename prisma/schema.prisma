@@ -66,6 +66,10 @@ enum AuditAction {
   /// filas son **permanentes**: la purga nunca las borra, para que quede rastro de
   /// que la limpieza se hizo y de cuanto se borro.
   AUDIT_PURGE
+
+  /// El titular pidio corregir un dato de su expediente (derecho de rectificacion).
+  /// El equipo aplica el cambio y ese cambio queda como EXPEDIENTE_UPDATE.
+  CORRECCION_SOLICITADA
 }
 
 model User {
@@ -93,6 +97,13 @@ model User {
   lastLoginAt       DateTime?
   lastLoginIp       String?
   passwordChangedAt DateTime?
+
+  /// Aviso de tratamiento de datos: version aceptada y cuando. Sin estos dos datos
+  /// no se puede demostrar que el titular consintio el tratamiento
+  /// (docs/SEGURIDAD_INTEGRAL.md 10.2). La version guardada es la del texto que se
+  /// mostro, no la vigente hoy.
+  consentimientoVersion    String?
+  consentimientoAceptadoAt DateTime?
 
   /// Segundo factor (TOTP, RFC 6238). El secreto se guarda en base32; mientras
   /// `totpEnabled` sea false esta pendiente de confirmar (el usuario lo genero

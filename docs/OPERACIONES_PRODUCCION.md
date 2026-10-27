@@ -373,7 +373,8 @@ npm run build
 - Memoria y CPU del proceso Node (OCR puede elevar CPU).
 - Estado de conexiones a Postgres.
 - Panel de auditoria (`/admin` -> Auditoria): descargas masivas (>20/h), fallos de
-  acceso (>10/h) y accesos fuera de horario.
+  acceso (>10/h), accesos fuera de horario y **solicitudes de correccion de datos**
+  de los ultimos 7 dias (derecho de rectificacion).
 
 ## 8) Backups y recuperacion
 
@@ -438,7 +439,25 @@ node scripts/reset-user-totp.mjs --email <correo> --apply
 Queda registrado en la auditoria (`TOTP_DISABLED` con `metadata.via = script_cli`).
 Pedir a la persona que lo vuelva a activar de inmediato.
 
-### 9.4 La carpeta `.open-next/` es sensible
+### 9.4 Solicitudes de correccion de datos
+
+Los miembros pueden pedir la correccion de un dato desde su panel (pestana
+Seguridad). El equipo las ve en `/admin` -> Auditoria, como alerta
+**"correcciones pendientes"** (solicitudes de los ultimos 7 dias).
+
+Flujo:
+
+1. Revisar la alerta y filtrar la tabla por la accion `CORRECCION_SOLICITADA`.
+2. Cada fila lleva el campo pedido y el detalle del titular, ademas de la cedula
+   enmascarada.
+3. Corregir el dato en el expediente (queda auditado como `EXPEDIENTE_UPDATE`).
+4. Avisar al miembro de que ya esta corregido.
+
+No hay estado "resuelta" por solicitud: el cierre se deduce del `EXPEDIENTE_UPDATE`
+posterior. La solicitud original **no se borra nunca** salvo por la purga de
+retencion.
+
+### 9.5 La carpeta `.open-next/` es sensible
 
 El build de OpenNext escribe `.open-next/cloudflare/next-env.mjs` con **las
 variables de entorno del build en claro** (incluida la contrasena de la base, la

@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, createSessionToken } from "@/lib/auth";
+import { CONSENT_REQUIRED_MESSAGE, buildConsentRecord } from "@/lib/consent.mjs";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -11,6 +12,8 @@ type RegisterPayload = {
   telefono?: string;
   password?: string;
   confirmPassword?: string;
+  /** Consentimiento del aviso de tratamiento de datos. */
+  consentimiento?: unknown;
   skipSession?: boolean;
 };
 
@@ -75,6 +78,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // Aviso de tratamiento de datos (docs/SEGURIDAD_INTEGRAL.md 10.2, punto 6): sin
+  // consentimiento explicito no se crea la cuenta. Se guarda la version del aviso
+  // que se mostro, no la vigente hoy.
+  const consentimiento = buildConsentRecord({ accepted: body.consentimiento });
+
+  if (!consentimiento) {
+    return NextResponse.json(
+      { ok: false, message: CONSENT_REQUIRED_MESSAGE },
+      { status: 400 },
+    );
+  }
+
   // Registro publico: limite por IP para frenar la creacion masiva de cuentas.
   const limite = await checkRateLimit("register", { request });
 
@@ -113,6 +128,8 @@ export async function POST(request: Request) {
         role: "PROSPECT",
         isMember: false,
         passwordChangedAt: new Date(),
+        // Prueba del consentimiento: version del aviso + fecha de aceptacion.
+        ...consentimiento,
       },
       select: { id: true, email: true, nombre: true, role: true, tokenVersion: true },
     });

@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/api-guard";
+import { CONSENT_REQUIRED_MESSAGE, buildConsentRecord } from "@/lib/consent.mjs";
 import { encryptMemberKeyWithEnv } from "@/lib/member-key-secret.mjs";
 import { prisma } from "@/lib/prisma";
 import { getMotoBySlug } from "@/data/motos";
@@ -40,6 +41,8 @@ type RegisterMemberPayload = {
   motoUnitPrice?: number;
   username?: string;
   encryptedKey?: string;
+  /** Consentimiento del aviso de tratamiento de datos. */
+  consentimiento?: unknown;
 };
 
 const MEMBER_KEY_PATTERN = /^SAN-MEMBER-[A-Z0-9]{6}$/;
@@ -141,6 +144,18 @@ export async function POST(request: Request) {
   ) {
     return NextResponse.json(
       { ok: false, message: "Completa el flujo completo: datos, documentos, contrato, pago y credenciales." },
+      { status: 400 },
+    );
+  }
+
+  // Aviso de tratamiento de datos (docs/SEGURIDAD_INTEGRAL.md 10.2, punto 6). El
+  // expediente guarda cedula, direccion, ubicacion y documentos: datos personales
+  // de alta sensibilidad. Sin consentimiento explicito no se crea la cuenta.
+  const consentimiento = buildConsentRecord({ accepted: body.consentimiento });
+
+  if (!consentimiento) {
+    return NextResponse.json(
+      { ok: false, message: CONSENT_REQUIRED_MESSAGE },
       { status: 400 },
     );
   }
@@ -279,6 +294,8 @@ export async function POST(request: Request) {
       telefono,
       passwordHash,
       isMember: true,
+      // Prueba del consentimiento del titular: version del aviso + fecha.
+      ...consentimiento,
     },
   });
 

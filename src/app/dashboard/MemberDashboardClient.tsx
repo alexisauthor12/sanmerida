@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import SeguridadView from "./SeguridadView";
+import SolicitudCorreccion from "./SolicitudCorreccion";
 import {
   AlertTriangle,
   Bell,
@@ -1038,6 +1039,10 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
 
                       <div className="md:col-span-2">
                         <SeguridadView />
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <SolicitudCorreccion />
                       </div>
                     </div>
                   )}

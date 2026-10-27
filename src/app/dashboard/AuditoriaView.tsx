@@ -84,6 +84,7 @@ const ETIQUETA_ACCION: Record<string, string> = {
   TOTP_CHALLENGE_FAILED: "Código de verificación fallido",
   RECOVERY_CODE_USED: "Código de recuperación usado",
   AUDIT_PURGE: "Purga por retención",
+  CORRECCION_SOLICITADA: "Corrección solicitada",
 };
 
 export default function AuditoriaView() {

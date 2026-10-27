@@ -592,6 +592,8 @@ Nueva pestana **Auditoria** en `/admin` (permiso `auditoria:read`, con step-up):
 | `/api/auth/logout` | `LOGOUT` |
 | `/api/auth/admin-license` | `ADMIN_LICENSE_SUCCESS`, `ADMIN_LICENSE_FAILED`, `TOTP_CHALLENGE_FAILED` |
 | `/api/auth/totp/*` | `TOTP_ENABLED`, `TOTP_DISABLED`, `TOTP_CHALLENGE_FAILED`, `RECOVERY_CODE_USED` |
+| `/api/member-panel/correccion` | `CORRECCION_SOLICITADA` |
+| `scripts/purge-audit-log.mjs` | `AUDIT_PURGE` (permanente: la purga no se borra a si misma) |
 | `/api/member-panel` | `EXPEDIENTE_READ` (propio o ajeno, con el actor) |
 | `/api/member-files/profile` | `EXPEDIENTE_READ` |
 | `/api/member-files/file` | `DOCUMENTO_READ` (con `targetLabel` = clave enmascarada) |
@@ -917,11 +919,39 @@ Refuerzos:
    Fase 3.
 5. **Integridad.** Borrado no destructivo, auditoria inmutable, y registro de la
    rotacion de credenciales.
-6. **Consentimiento y aviso.** El formulario de registro de miembros incorpora el
-   aviso de tratamiento de datos y el consentimiento explicito (texto a revisar
-   por el responsable legal).
-7. **Derecho de acceso y rectificacion.** El miembro ya ve su expediente en
-   `/dashboard`; se agrega la posibilidad de solicitar correccion (queda auditado).
+6. **Consentimiento y aviso.** — **implementado.** El formulario de registro de
+   miembros incorpora el aviso de tratamiento de datos y el consentimiento
+   explicito. Detalles:
+   - El texto vive en `src/lib/consent.mjs` (no en la interfaz), para que la version
+     guardada corresponda **exactamente** al texto que se mostro. Cambiar el aviso =
+     cambiar `CONSENT_VERSION`.
+   - Se guarda `consentimientoVersion` + `consentimientoAceptadoAt` en `User`.
+   - El **servidor** exige el consentimiento: `/api/auth/register` y
+     `/api/auth/register-member` responden `400` sin el. La casilla de la interfaz
+     es comodidad, no la defensa.
+   - Se pide en **los dos** registros: el publico (que ya recoge nombre, correo y
+     telefono) y el de miembros (que recoge cedula, direccion, ubicacion y
+     documentos).
+   - El mismo componente (`AvisoTratamientoDatos.tsx`) se usa en ambos, para que no
+     existan dos versiones del texto.
+   - **Texto pendiente de revision legal.** Es una base tecnica coherente con lo que
+     el sistema hace de verdad (menciona la papelera de 30 dias, la auditoria, el
+     cifrado y los derechos), pero debe validarlo el responsable legal.
+7. **Derecho de acceso y rectificacion.** — **implementado.** El miembro ve su
+   expediente en `/dashboard` y ademas puede **pedir** la correccion de un dato:
+   - `POST /api/member-panel/correccion` con `{ campo, detalle }`.
+   - El miembro **nunca** edita su expediente: la solicitud se audita
+     (`CORRECCION_SOLICITADA`) y el equipo aplica el cambio, que se audita como
+     `EXPEDIENTE_UPDATE`. Queda rastro de quien pidio que y quien lo cambio.
+   - El expediente se resuelve por el `userId` de la sesion, **nunca** por una cedula
+     de la peticion: no se puede pedir correcciones sobre expedientes ajenos.
+   - El campo esta limitado a una lista cerrada (`correction-request.mjs`): no se
+     puede pedir "corregir" `passwordHash` ni la cedula.
+   - El panel de auditoria muestra una alerta de **correcciones pendientes** (ultimos
+     7 dias); sin ella las solicitudes quedarian enterradas en la tabla.
+   - La interfaz esta en la pestana Seguridad del panel del miembro.
+   - Mejora futura: un estado explicito `resuelta` por solicitud. Hoy el cierre se
+     deduce del `EXPEDIENTE_UPDATE` posterior.
 8. **Notificacion de brechas.** Procedimiento documentado en el runbook: deteccion,
    contencion, evaluacion del alcance **usando la auditoria**, notificacion y
    medidas correctivas.
@@ -1027,6 +1057,21 @@ Comprueba la transicion sin cortes: sin secreto propio se sigue usando
 las credenciales cifradas antes de separar los secretos siguen abriendo gracias al
 respaldo heredado; y sin ningun secreto configurado no se cifra nada.
 
+### 11.10 `tests/consent.test.mjs` — aviso y consentimiento
+
+Comprueba que el aviso cubre las seis materias que exige la seccion 10.2 (quien
+trata, para que, que datos, cuanto tiempo, derechos y como se protege) y que no
+promete menos de lo que el sistema hace (papelera, auditoria, cifrado). Ademas:
+`isConsentAccepted` es **fail-closed** (solo acepta formas explicitas de
+consentimiento) y `buildConsentRecord` devuelve `null` sin el, de modo que quien
+llame no puede olvidarse de rechazar.
+
+### 11.11 `tests/correction-request.test.mjs` — derecho de rectificacion
+
+Verifica que el campo este en la lista cerrada (no se puede pedir "corregir" una
+contrasena ni la cedula), que el detalle tenga un minimo util, que se normalicen
+espacios y mayusculas, y que un detalle larguisimo se recorte en vez de reventar.
+
 ---
 
 ## 12) Plan de implementacion por fases
@@ -1072,7 +1117,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
 | 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) — **hecho** (seccion 6.4; el resumen queda como `AUDIT_PURGE`) |
 | 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes |
-| 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros |
+| 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros — **hecho** (seccion 10.2, punto 6; tambien en el registro publico) |
 
 ### Fase 3 — Defensa en profundidad
 

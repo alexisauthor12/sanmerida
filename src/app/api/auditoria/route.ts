@@ -27,6 +27,12 @@ const VENTANA_ALERTA_MS = 60 * 60 * 1000;
 const UMBRAL_DESCARGAS = 20;
 const UMBRAL_FALLOS = 10;
 
+/**
+ * Las solicitudes de correccion de datos no son urgentes por hora, pero no se
+ * pueden perder de vista: se cuentan los ultimos dias.
+ */
+const DIAS_CORRECCIONES = 7;
+
 const ACCIONES = Object.values($Enums.AuditAction);
 
 function fechaValida(valor: string | null): Date | null {
@@ -89,7 +95,7 @@ export async function GET(request: Request) {
   if (resultado === "denegado") where.success = false;
 
   try {
-    const [total, registros, porAccion, porActor, recientes] = await Promise.all([
+    const [total, registros, porAccion, porActor, recientes, correccionesPendientes] = await Promise.all([
       prisma.auditLog.count({ where }),
       prisma.auditLog.findMany({
         where,
@@ -131,6 +137,14 @@ export async function GET(request: Request) {
         select: { action: true, actorEmail: true, success: true, createdAt: true },
         orderBy: { createdAt: "desc" },
         take: 2000,
+      }),
+      // Derecho de rectificacion: solicitudes del titular recientes. Sin esto
+      // quedarian enterradas en la tabla y nadie las veria.
+      prisma.auditLog.count({
+        where: {
+          action: "CORRECCION_SOLICITADA",
+          createdAt: { gte: new Date(Date.now() - DIAS_CORRECCIONES * 24 * 60 * 60 * 1000) },
+        },
       }),
     ]);
 
@@ -180,6 +194,14 @@ export async function GET(request: Request) {
         tipo: "fuera_de_horario",
         detalle: `${fueraDeHorario} accesos entre las 00:00 y las 06:00 en la última hora`,
         total: fueraDeHorario,
+      });
+    }
+
+    if (correccionesPendientes > 0) {
+      alertas.push({
+        tipo: "correcciones_pendientes",
+        detalle: `${correccionesPendientes} solicitud(es) de corrección de datos en los últimos ${DIAS_CORRECCIONES} días`,
+        total: correccionesPendientes,
       });
     }
 
