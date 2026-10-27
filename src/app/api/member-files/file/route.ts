@@ -5,9 +5,10 @@ import {
   isServableAssetKey,
   normalizeStorageKey,
 } from "@/lib/asset-paths.mjs";
+import { requireExpedienteAccess } from "@/lib/api-guard";
 import { readAssetObject } from "@/lib/asset-storage";
+import { labelExpediente, recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 // Sin cache de ruta: cada lectura debe ir al almacenamiento real.
@@ -27,15 +28,6 @@ export const revalidate = 0;
  */
 export async function GET(request: Request) {
   try {
-    const sessionUser = await getSessionUser();
-
-    if (!sessionUser?.userId) {
-      return NextResponse.json(
-        { ok: false, message: "Debes iniciar sesión para ver los archivos del expediente." },
-        { status: 401 },
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const key = normalizeStorageKey(searchParams.get("path") ?? "");
     const cedula = extractMemberCedulaFromKey(key);
@@ -49,18 +41,17 @@ export async function GET(request: Request) {
       );
     }
 
-    if (sessionUser.isMember) {
-      const profile = await prisma.memberProfile.findUnique({
-        where: { cedula },
-        select: { userId: true },
-      });
+    // Un miembro solo accede a su propio expediente; ADMIN (con
+    // `documento:read:any`) accede a cualquiera. Si no esta autorizado se responde
+    // 404 uniforme, sin confirmar que el documento existe.
+    const access = await requireExpedienteAccess(cedula, {
+      request,
+      anyPermission: "documento:read:any",
+      ownPermission: "documento:read:own",
+    });
 
-      if (!profile || profile.userId !== sessionUser.userId) {
-        return NextResponse.json(
-          { ok: false, message: "Tu perfil no tiene acceso a este expediente." },
-          { status: 403 },
-        );
-      }
+    if (!access.ok) {
+      return access.response;
     }
 
     // El documento se sirve solo si sigue registrado en el expediente. Asi,
@@ -94,6 +85,21 @@ export async function GET(request: Request) {
 
     const bytes = await readAssetObject(key);
     const fileName = key.split("/").pop() || "archivo";
+
+    // Queda registrado quien descargo que documento, desde que IP y cuando.
+    await recordAudit({
+      action: "DOCUMENTO_READ",
+      actor: {
+        userId: access.user.userId,
+        email: access.user.email,
+        role: access.user.role,
+      },
+      targetType: "MemberAsset",
+      targetId: knownAsset.id,
+      targetLabel: labelExpediente(cedula),
+      metadata: { archivo: fileName },
+      request,
+    });
 
     return new NextResponse(bytes, {
       status: 200,

@@ -25,10 +25,10 @@ export type AuditEntry = {
   action: AuditAction;
   actor?: AuditActor | null;
   /** "MemberProfile" | "MemberAsset" | "InstallmentPayment" | "NewsPost" | "User" */
-  targetType?: string;
-  targetId?: string;
+  targetType?: string | null;
+  targetId?: string | null;
   /** Etiqueta legible; para expedientes usa `labelExpediente()` (enmascarada). */
-  targetLabel?: string;
+  targetLabel?: string | null;
   metadata?: Record<string, unknown>;
   success?: boolean;
   request?: Request;

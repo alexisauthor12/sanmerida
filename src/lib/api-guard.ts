@@ -26,8 +26,22 @@ import { prisma } from "@/lib/prisma";
  *  5. Auditoria del acceso (concedido o denegado).
  */
 
-/** Rutas publicas: lista blanca explicita y auditada. */
-export const PUBLIC_ROUTES = ["/api/auth/login", "/api/auth/logout"];
+/**
+ * Rutas publicas: lista blanca explicita y auditada.
+ *
+ * - `/api/auth/login`: puerta de entrada.
+ * - `/api/auth/logout`: solo borra cookies.
+ * - `/api/auth/register`: registro inicial publico; la cuenta nace como PROSPECT
+ *   y no obtiene ningun permiso sobre datos de terceros.
+ * - `/api/dev/create-member-admin`: utilidad de desarrollo, responde 404 en
+ *   cualquier entorno que no sea `development`.
+ */
+export const PUBLIC_ROUTES = [
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/auth/register",
+  "/api/dev/create-member-admin",
+];
 
 export type SessionUser = {
   userId: string;

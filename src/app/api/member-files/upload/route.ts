@@ -8,9 +8,10 @@ import {
   sanitizeCedulaDigits,
   validateAssetUpload,
 } from "@/lib/asset-paths.mjs";
+import { requirePermission } from "@/lib/api-guard";
 import { deleteAssetObject, saveAssetObject } from "@/lib/asset-storage";
+import { labelExpediente, recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -444,14 +445,11 @@ async function tryBuildAutoSelfie(sourceBytes: Buffer) {
 }
 
 export async function POST(request: Request) {
-  const sessionUser = await getSessionUser();
+  // Cargar un documento de expediente es una escritura: solo ADMIN.
+  const access = await requirePermission("documento:upload", { request });
 
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para cargar archivos." }, { status: 401 });
-  }
-
-  if (sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para cargar expedientes." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   const form = await request.formData();
@@ -665,14 +663,12 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const sessionUser = await getSessionUser();
+  // Borrar prueba documental es destructivo: exige el permiso de borrado, que
+  // ademas esta en la lista de step-up (licencia administrativa validada).
+  const access = await requirePermission("documento:delete", { request });
 
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para eliminar archivos." }, { status: 401 });
-  }
-
-  if (sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para eliminar archivos." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   let payload: {

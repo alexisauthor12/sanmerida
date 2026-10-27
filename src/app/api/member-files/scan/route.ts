@@ -10,8 +10,8 @@ import {
   sanitizeCedulaDigits,
 } from "@/lib/asset-paths.mjs";
 import { readAssetObject, saveAssetObject } from "@/lib/asset-storage";
+import { requirePermission } from "@/lib/api-guard";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -214,14 +214,11 @@ async function enhanceDocumentImage(sourceBytes: Buffer, scanMode: ScanMode) {
 
 export async function POST(request: Request) {
   try {
-    const sessionUser = await getSessionUser();
+    // Escanear un documento de expediente es una escritura: solo ADMIN.
+    const access = await requirePermission("documento:scan", { request });
 
-    if (!sessionUser?.userId) {
-      return NextResponse.json({ ok: false, message: "Debes iniciar sesión para escanear expedientes." }, { status: 401 });
-    }
-
-    if (sessionUser.isMember) {
-      return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para escaneo de expedientes." }, { status: 403 });
+    if (!access.ok) {
+      return access.response;
     }
 
     const body = (await request.json()) as {

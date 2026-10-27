@@ -1,20 +1,30 @@
 import { NextResponse } from "next/server";
+import { requirePermission } from "@/lib/api-guard";
+import { labelExpediente, recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
+
+export const runtime = "nodejs";
+// Datos de expediente: nunca se cachean.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function sanitizeCedula(value: string) {
   return value.replace(/[^0-9]/g, "");
 }
 
+/**
+ * Expediente completo de un miembro.
+ *
+ * Exige el permiso `expediente:read:any`, que solo tiene ADMIN. Antes bastaba con
+ * tener una sesion cualquiera: una cuenta recien creada en `/register` podia leer
+ * la cedula, la direccion, la geolocalizacion y las referencias de cualquier
+ * persona (hallazgo B de `docs/SEGURIDAD_INTEGRAL.md`).
+ */
 export async function GET(request: Request) {
-  const sessionUser = await getSessionUser();
+  const access = await requirePermission("expediente:read:any", { request });
 
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para consultar expedientes." }, { status: 401 });
-  }
-
-  if (sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para consultar expedientes." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   const { searchParams } = new URL(request.url);
@@ -41,8 +51,26 @@ export async function GET(request: Request) {
     },
   });
 
+  await recordAudit({
+    action: "EXPEDIENTE_READ",
+    actor: {
+      userId: access.user.userId,
+      email: access.user.email,
+      role: access.user.role,
+    },
+    targetType: "MemberProfile",
+    targetId: profile?.id ?? null,
+    targetLabel: labelExpediente(cedula),
+    metadata: { encontrado: Boolean(profile) },
+    request,
+  });
+
   if (!profile) {
-    return NextResponse.json({ ok: true, found: false, message: "No existe expediente para esa cédula." });
+    return NextResponse.json({
+      ok: true,
+      found: false,
+      message: "No existe expediente para esa cédula.",
+    });
   }
 
   return NextResponse.json({ ok: true, found: true, profile });

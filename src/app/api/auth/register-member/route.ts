@@ -1,9 +1,9 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
+import { requirePermission } from "@/lib/api-guard";
 import { encryptMemberKey } from "@/lib/member-credentials.mjs";
 import { prisma } from "@/lib/prisma";
 import { getMotoBySlug } from "@/data/motos";
-import { getSessionUser } from "@/lib/session";
 
 type RegisterMemberPayload = {
   nombre?: string;
@@ -71,14 +71,13 @@ function parseCoordinate(value: unknown) {
 
 export async function POST(request: Request) {
   try {
-    const sessionUser = await getSessionUser();
+    // Crear un expediente implica escribir datos personales de terceros: solo
+    // ADMIN. Antes bastaba con "tener sesion y no ser miembro", lo que con el rol
+    // PROSPECT habria permitido a un recien registrado crear expedientes.
+    const access = await requirePermission("expediente:create", { request });
 
-    if (!sessionUser?.userId) {
-      return NextResponse.json({ ok: false, message: "Debes iniciar sesión para registrar miembros." }, { status: 401 });
-    }
-
-    if (sessionUser.isMember) {
-      return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para registrar miembros." }, { status: 403 });
+    if (!access.ok) {
+      return access.response;
     }
 
     const body = (await request.json()) as RegisterMemberPayload;
@@ -352,7 +351,7 @@ export async function POST(request: Request) {
           bank: paymentBank,
           method: paymentMethod,
           note: `Primera cuota ajustada al registrar expediente. Pago recibido: ${paymentAmount.toFixed(2)} USD.`,
-          createdByUserId: String(sessionUser.userId ?? ""),
+          createdByUserId: String(access.user.userId),
         },
       });
     } else {
@@ -366,7 +365,7 @@ export async function POST(request: Request) {
           bank: paymentBank,
           method: paymentMethod,
           note: `Primera cuota registrada automáticamente al crear el expediente. Pago recibido: ${paymentAmount.toFixed(2)} USD.`,
-          createdByUserId: String(sessionUser.userId ?? ""),
+          createdByUserId: String(access.user.userId),
         },
       });
     }

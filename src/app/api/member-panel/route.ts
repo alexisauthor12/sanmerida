@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { requirePermission } from "@/lib/api-guard";
 import { buildAssetUrl } from "@/lib/asset-paths.mjs";
-import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
+import { labelExpediente, recordAudit } from "@/lib/audit";
 import {
   buildInstallments,
   buildPaidAmountMap,
@@ -12,7 +12,6 @@ import {
   toDmy,
 } from "@/lib/installment-schedule.mjs";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 // El panel del miembro siempre muestra datos frescos (cuotas y pagos al dia).
@@ -42,43 +41,26 @@ function sanitizeCedula(value: string) {
   return value.replace(/[^0-9]/g, "");
 }
 
-/** El personal administrativo necesita la licencia validada para ver un panel ajeno. */
-async function tieneLicenciaAdmin(userId: string) {
-  const store = await cookies();
-  const token = store.get(ADMIN_ACCESS_COOKIE_NAME)?.value;
-
-  if (!token) return false;
-
-  try {
-    const payload = await verifyAdminAccessToken(token);
-
-    return payload.scope === "admin_access" && payload.userId === userId;
-  } catch {
-    return false;
-  }
-}
+// La licencia administrativa ya no se comprueba aqui: es un step-up que aplica
+// `api-guard.ts` segun el permiso requerido (ver docs/SEGURIDAD_INTEGRAL.md 5.4).
 
 
 /**
- * Panel del miembro: devuelve SOLO el expediente del propio cliente autenticado
- * (plan, cuotas, pagos, documentos y contratos). El personal administrativo
- * puede consultar un expediente concreto pasando `?cedula=` y su licencia.
+ * Panel del miembro: devuelve el expediente completo (plan, cuotas, pagos,
+ * documentos y contratos).
  *
  * Uso:
- *   GET /api/member-panel                    (miembro: su propio expediente)
- *   GET /api/member-panel?cedula=31033017    (personal con licencia)
+ *   GET /api/member-panel                    (miembro: SU propio expediente)
+ *   GET /api/member-panel?cedula=31033017    (ADMIN: el expediente que indique)
+ *
+ * El acceso lo decide el **rol** (`authz.mjs`), no la posesion de la licencia:
+ *  - Sin `cedula`: exige `expediente:read:own`, y el `own` se resuelve por el
+ *    `userId` de la sesion, nunca por un parametro de la peticion.
+ *  - Con `cedula`: exige `expediente:read:any` (solo ADMIN).
  */
 export async function GET(request: Request) {
-  const sessionUser = await getSessionUser();
-
-  if (!sessionUser?.userId) {
-    return NextResponse.json(
-      { ok: false, message: "Debes iniciar sesión para ver tu panel." },
-      { status: 401 },
-    );
-  }
-
   const { searchParams } = new URL(request.url);
+  const cedula = sanitizeCedula(searchParams.get("cedula") ?? "");
 
   const include = {
     installmentPayments: { orderBy: { paymentDate: "desc" as const } },
@@ -87,28 +69,42 @@ export async function GET(request: Request) {
   };
 
   let profile = null;
+  let actor: { userId: string; email: string; role: string } | null = null;
 
-  if (sessionUser.isMember) {
-    profile = await prisma.memberProfile.findFirst({
-      where: { userId: sessionUser.userId },
-      include,
-    });
-  } else {
-    if (!(await tieneLicenciaAdmin(sessionUser.userId))) {
-      return NextResponse.json(
-        { ok: false, message: "Valida la licencia administrativa para ver el panel de un miembro." },
-        { status: 403 },
-      );
+  if (cedula) {
+    const access = await requirePermission("expediente:read:any", { request });
+
+    if (!access.ok) {
+      return access.response;
     }
 
-    const cedula = sanitizeCedula(searchParams.get("cedula") ?? "");
-
-    if (!cedula) {
-      return NextResponse.json({ ok: false, message: "Indica la cédula del miembro." }, { status: 400 });
-    }
+    actor = { userId: access.user.userId, email: access.user.email, role: access.user.role };
 
     profile = await prisma.memberProfile.findUnique({ where: { cedula }, include });
+  } else {
+    const access = await requirePermission("expediente:read:own", { request });
+
+    if (!access.ok) {
+      return access.response;
+    }
+
+    actor = { userId: access.user.userId, email: access.user.email, role: access.user.role };
+
+    profile = await prisma.memberProfile.findFirst({
+      where: { userId: access.user.userId },
+      include,
+    });
   }
+
+  await recordAudit({
+    action: "EXPEDIENTE_READ",
+    actor,
+    targetType: "MemberProfile",
+    targetId: profile?.id ?? null,
+    targetLabel: labelExpediente(cedula || profile?.cedula || ""),
+    metadata: { propio: !cedula },
+    request,
+  });
 
   if (!profile) {
     return NextResponse.json({
@@ -187,7 +183,7 @@ export async function GET(request: Request) {
       nombre: `${profile.nombre ?? ""} ${profile.apellido ?? ""}`.trim() || `Cliente ${profile.cedula}`,
       nombrePila: profile.nombre ?? "",
       apellido: profile.apellido ?? "",
-      email: profile.email ?? sessionUser.email ?? "",
+      email: profile.email ?? actor?.email ?? "",
       telefono: profile.telefono ?? "",
       direccion: profile.direccion ?? "",
       ocupacion: profile.ocupacion ?? "",
