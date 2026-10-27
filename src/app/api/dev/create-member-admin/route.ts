@@ -30,7 +30,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: "Recurso no encontrado." }, { status: 404 });
   }
 
-  const body = (await request.json()) as Payload;
+  let body: Payload;
+
+  try {
+    body = (await request.json()) as Payload;
+  } catch {
+    return NextResponse.json({ ok: false, message: "Cuerpo de la solicitud inválido." }, { status: 400 });
+  }
+
   const username = (body.username ?? "san-admin").trim().toLowerCase();
   const email = (body.email ?? "san-admin@local").trim().toLowerCase();
   const nombre = body.nombre ?? "SAN";
@@ -45,6 +52,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: "memberKey inválida. Formato: SAN-MEMBER-XXXXXX" }, { status: 400 });
   }
 
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return NextResponse.json({ ok: false, message: "Correo inválido." }, { status: 400 });
+  }
+
   try {
     // If a MemberProfile exists, reuse its user if present; else create a new user
     const existingProfile = await prisma.memberProfile.findFirst({ where: { username } });
@@ -52,6 +63,24 @@ export async function POST(request: Request) {
     let userId = existingProfile?.userId ?? null;
 
     if (!userId) {
+      // Blindaje: si el correo ya pertenece a una cuenta que NO es de miembro
+      // (por ejemplo una cuenta del equipo), se rechaza en vez de convertirla en
+      // miembro y sobrescribir su contraseña.
+      const existingUser = await prisma.user.findUnique({
+        where: { email },
+        select: { isMember: true },
+      });
+
+      if (existingUser && !existingUser.isMember) {
+        return NextResponse.json(
+          {
+            ok: false,
+            message: `El correo ${email} pertenece a una cuenta del equipo. Usa otro correo para la cuenta de prueba.`,
+          },
+          { status: 409 },
+        );
+      }
+
       const passwordHash = await bcrypt.hash(memberKey, 12);
       const user = await prisma.user.upsert({
         where: { email },
