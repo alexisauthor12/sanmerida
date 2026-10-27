@@ -12,7 +12,7 @@ function getRequiredEnv(name: RequiredName) {
   if (!value) {
     if (process.env.NODE_ENV !== "production") {
       if (name === "ADMIN_USERNAME") return "san-root-x9";
-      if (name === "ADMIN_ACCOUNT_EMAIL") return "admin@sanmerida.com";
+      if (name === "ADMIN_ACCOUNT_EMAIL") return "admin@sanmeridajz.com";
     }
 
     throw new Error(`${name} no está configurado.`);

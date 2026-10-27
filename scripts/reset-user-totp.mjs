@@ -7,8 +7,8 @@
  * de datos, que es justamente el nivel de privilegio que la justifica.
  *
  * Uso:
- *   node scripts/reset-user-totp.mjs --email admin@sanmerida.com            (simulacro)
- *   node scripts/reset-user-totp.mjs --email admin@sanmerida.com --apply    (aplica)
+ *   node scripts/reset-user-totp.mjs --email admin@sanmeridajz.com            (simulacro)
+ *   node scripts/reset-user-totp.mjs --email admin@sanmeridajz.com --apply    (aplica)
  *
  * Queda registrado en `AuditLog` como `TOTP_DISABLED` con `metadata.via =
  * "script_cli"`, para que el restablecimiento no sea invisible.

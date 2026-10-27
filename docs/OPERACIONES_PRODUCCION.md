@@ -50,7 +50,13 @@ Notas:
 ### 1.6.bis) Datos de acceso del administrador
 
 - **Usuario admin**: `ADMIN_USERNAME` (en desarrollo por defecto `san-root-x9`).
-- **Cuenta admin**: `ADMIN_ACCOUNT_EMAIL` (por defecto `admin@sanmerida.com`).
+- **Cuenta admin**: `ADMIN_ACCOUNT_EMAIL` (por defecto `admin@sanmeridajz.com`).
+  **Ojo con este valor**: es obligatorio —sin él, `/api/auth/admin-license` responde `500`
+  «Configuración de seguridad administrativa incompleta»— pero **hoy no lo lee nadie**:
+  se carga en `getAdminSecurityConfig().accountEmail` y no se usa en ninguna comprobación
+  (la licencia valida con `ADMIN_USERNAME` y `ADMIN_LICENSE_HASH`). O se le da un uso real
+  (destinatario de alertas, segunda comprobación) o se elimina, para que no sea un secreto
+  obligatorio sin consumidor.
 - **Licencia**: valor en claro que **no se guarda en ningun archivo**; en
   produccion solo existe su hash bcrypt. Guardarla en el gestor de claves del
   responsable (nunca en el chat ni en el repositorio).
