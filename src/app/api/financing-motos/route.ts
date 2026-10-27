@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { MOTOS } from "@/data/motos";
-import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
+import { requirePermission } from "@/lib/api-guard";
 import {
   computeFinancing,
   normalizeFinancingConfig,
 } from "@/lib/moto-financing.mjs";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 type FinancingPayloadItem = {
   motoSlug?: string;
@@ -18,65 +16,14 @@ type FinancingPayloadItem = {
   activo?: boolean;
 };
 
-/**
- * Verifica el acceso. La lectura (GET) solo exige sesion: la usa el formulario
- * de registro. La escritura (POST) exige licencia administrativa en produccion.
- */
-async function ensureAccess(options: { requireLicense: boolean }) {
-  const isProduction = process.env.NODE_ENV === "production";
-  const sessionUser = await getSessionUser();
-
-  if (!sessionUser?.userId) {
-    return NextResponse.json(
-      { ok: false, message: "Debes iniciar sesión para gestionar el financiamiento." },
-      { status: 401 },
-    );
-  }
-
-  if (!options.requireLicense) {
-    return { ok: true as const };
-  }
-
-  const adminToken = (await cookies()).get(ADMIN_ACCESS_COOKIE_NAME)?.value;
-
-  if (!adminToken) {
-    if (!isProduction) {
-      return { ok: true as const };
-    }
-
-    return NextResponse.json(
-      { ok: false, message: "Debes validar licencia administrativa para editar el financiamiento." },
-      { status: 403 },
-    );
-  }
-
-  try {
-    const adminAccess = await verifyAdminAccessToken(adminToken);
-    const hasAdminAccess =
-      adminAccess.scope === "admin_access" &&
-      adminAccess.userId.length > 0 &&
-      adminAccess.userId === String(sessionUser.userId ?? "");
-
-    if (!hasAdminAccess) {
-      return NextResponse.json(
-        { ok: false, message: "Acceso administrativo inválido o expirado." },
-        { status: 403 },
-      );
-    }
-  } catch {
-    return NextResponse.json(
-      { ok: false, message: "Acceso administrativo inválido o expirado." },
-      { status: 403 },
-    );
-  }
-
-  return { ok: true as const };
-}
+// El control de acceso vive ahora en `api-guard.ts` (rol + step-up por permiso).
 
 export async function GET() {
-  const access = await ensureAccess({ requireLicense: false });
-  if (access instanceof NextResponse) {
-    return access;
+  // Los precios del financiamiento los ve cualquier cuenta con sesion.
+  const access = await requirePermission("financiamiento:read");
+
+  if (!access.ok) {
+    return access.response;
   }
 
   try {
@@ -112,9 +59,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const access = await ensureAccess({ requireLicense: true });
-  if (access instanceof NextResponse) {
-    return access;
+  // Cambiar el financiamiento afecta a TODOS los contratos nuevos: permiso de
+  // escritura + step-up (licencia administrativa validada).
+  const access = await requirePermission("financiamiento:write", { request });
+
+  if (!access.ok) {
+    return access.response;
   }
 
   let body: { motos?: FinancingPayloadItem[] } = {};

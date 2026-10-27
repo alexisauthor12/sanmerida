@@ -28,16 +28,13 @@ const PUBLICAS = [
 
 /**
  * Deuda tecnica reconocida: rutas que aun comprueban la sesion por su cuenta y
- * todavia NO pasan por el guard. **Esta lista solo puede encoger**: si una ruta
- * de aqui ya usa el guard, la prueba falla y obliga a quitarla.
+ * todavia NO pasan por el guard.
+ *
+ * **Esta vacia**: todas las rutas del proyecto pasan por el guard. La lista se
+ * mantiene para que, si alguna vez hay que migrar algo de forma incremental, el
+ * test impida que crezca (y obligue a vaciarla de nuevo).
  */
-const PENDIENTES = [
-  "/api/auth/admin-license",
-  "/api/auth/session-status",
-  "/api/financing-motos",
-  "/api/monitor-cuotas",
-  "/api/noticias",
-];
+const PENDIENTES = [];
 
 function rutasRouteTs(dir) {
   const encontradas = [];

@@ -1,12 +1,28 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
-import { getSessionUser } from "@/lib/session";
+import { requireSession } from "@/lib/api-guard";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+/** Traduce el rol del sistema al valor que espera la interfaz. */
+const ROLE_CLIENTE: Record<string, string> = {
+  MEMBER: "member",
+  ADMIN: "account",
+  PROSPECT: "prospect",
+};
+
+/**
+ * Estado de la sesion actual.
+ *
+ * Pasa por el guard (firma + `tokenVersion` + cuenta activa). Si no hay sesion
+ * valida responde el estado de invitado con 200, para que la interfaz no tenga
+ * que distinguir entre "sin sesion" y "error".
+ */
 export async function GET() {
-  const sessionUser = await getSessionUser();
+  const session = await requireSession();
 
-  if (!sessionUser?.userId) {
+  if (!session.ok) {
     return NextResponse.json({
       ok: true,
       authenticated: false,
@@ -16,26 +32,15 @@ export async function GET() {
     });
   }
 
-  let adminValidated = false;
-
-  try {
-    const adminToken = (await cookies()).get(ADMIN_ACCESS_COOKIE_NAME)?.value;
-
-    if (adminToken) {
-      const payload = await verifyAdminAccessToken(adminToken);
-      adminValidated = payload.scope === "admin_access" && payload.userId === String(sessionUser.userId);
-    }
-  } catch {
-    adminValidated = false;
-  }
-
-  const role = sessionUser.isMember ? "member" : "account";
+  const { user, licenseValidated } = session;
+  const role = ROLE_CLIENTE[user.role] ?? "guest";
 
   return NextResponse.json({
     ok: true,
     authenticated: true,
     role,
-    adminValidated,
-    adminTotalAccess: role === "account" && adminValidated,
+    // `licenseValidated` ya comprueba scope, usuario y tokenVersion de la licencia.
+    adminValidated: licenseValidated,
+    adminTotalAccess: user.role === "ADMIN" && licenseValidated,
   });
 }

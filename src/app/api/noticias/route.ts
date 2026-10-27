@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
+import { requirePermission } from "@/lib/api-guard";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,36 +19,22 @@ function categoriaValida(valor: unknown) {
   return CATEGORIAS.includes(categoria) ? categoria : "Corporativo";
 }
 
-/** El equipo administrativo necesita su licencia validada para publicar o editar. */
-async function tieneLicenciaAdmin(userId: string) {
-  const store = await cookies();
-  const token = store.get(ADMIN_ACCESS_COOKIE_NAME)?.value;
-
-  if (!token) return false;
-
-  try {
-    const payload = await verifyAdminAccessToken(token);
-
-    return payload.scope === "admin_access" && payload.userId === userId;
-  } catch {
-    return false;
-  }
-}
+// El control de acceso vive ahora en `api-guard.ts` (rol + step-up por permiso).
 
 /**
  * Feed de la empresa.
  *
- *  - Miembro: solo publicaciones publicadas.
- *  - Equipo con licencia: tambien las borradores (para administrarlas).
+ *  - Cualquier cuenta con sesion (PROSPECT incluido): solo lo publicado.
+ *  - ADMIN: tambien los borradores, para administrarlos.
  */
 export async function GET() {
-  const sessionUser = await getSessionUser();
+  const access = await requirePermission("novedad:read:published");
 
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para ver las novedades." }, { status: 401 });
+  if (!access.ok) {
+    return access.response;
   }
 
-  const puedeAdministrar = !sessionUser.isMember && (await tieneLicenciaAdmin(sessionUser.userId));
+  const puedeAdministrar = access.user.role === "ADMIN";
 
   try {
     const posts = await prisma.newsPost.findMany({
@@ -97,14 +81,11 @@ type PostPayload = {
 
 /** Publica una novedad en el feed de la empresa. */
 export async function POST(request: Request) {
-  const sessionUser = await getSessionUser();
+  // Publicar afecta a todos los usuarios: permiso de escritura + step-up.
+  const access = await requirePermission("novedad:write", { request });
 
-  if (!sessionUser?.userId || sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Solo el equipo de San Mérida puede publicar novedades." }, { status: 403 });
-  }
-
-  if (!(await tieneLicenciaAdmin(sessionUser.userId))) {
-    return NextResponse.json({ ok: false, message: "Valida la licencia administrativa para publicar." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   const body = (await request.json()) as PostPayload;
@@ -123,7 +104,7 @@ export async function POST(request: Request) {
         categoria: categoriaValida(body.categoria),
         imagenUrl: texto(body.imagenUrl, 500) || null,
         videoUrl: texto(body.videoUrl, 500) || null,
-        autor: sessionUser.nombre || sessionUser.email || "Equipo San Mérida",
+        autor: access.user.nombre || access.user.email || "Equipo San Mérida",
         destacado: Boolean(body.destacado),
         publicado: body.publicado === false ? false : true,
       },
@@ -137,14 +118,10 @@ export async function POST(request: Request) {
 
 /** Edita una novedad (o la publica / despublica). */
 export async function PATCH(request: Request) {
-  const sessionUser = await getSessionUser();
+  const access = await requirePermission("novedad:write", { request });
 
-  if (!sessionUser?.userId || sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Solo el equipo de San Mérida puede editar novedades." }, { status: 403 });
-  }
-
-  if (!(await tieneLicenciaAdmin(sessionUser.userId))) {
-    return NextResponse.json({ ok: false, message: "Valida la licencia administrativa para editar." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   const body = (await request.json()) as PostPayload;
@@ -177,14 +154,10 @@ export async function PATCH(request: Request) {
 
 /** Elimina una novedad del feed. */
 export async function DELETE(request: Request) {
-  const sessionUser = await getSessionUser();
+  const access = await requirePermission("novedad:write", { request });
 
-  if (!sessionUser?.userId || sessionUser.isMember) {
-    return NextResponse.json({ ok: false, message: "Solo el equipo de San Mérida puede eliminar novedades." }, { status: 403 });
-  }
-
-  if (!(await tieneLicenciaAdmin(sessionUser.userId))) {
-    return NextResponse.json({ ok: false, message: "Valida la licencia administrativa para eliminar." }, { status: 403 });
+  if (!access.ok) {
+    return access.response;
   }
 
   const { searchParams } = new URL(request.url);

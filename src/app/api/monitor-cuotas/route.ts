@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { requirePermission } from "@/lib/api-guard";
 import { buildAssetUrl } from "@/lib/asset-paths.mjs";
 import {
   buildInstallments,
@@ -17,9 +17,7 @@ import {
   generateMemberKey,
   isMemberKey,
 } from "@/lib/member-credentials.mjs";
-import { ADMIN_ACCESS_COOKIE_NAME, verifyAdminAccessToken } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser } from "@/lib/session";
 
 type MonitorClient = {
   id: string;
@@ -464,54 +462,15 @@ async function mapProfile(
   };
 }
 
-async function ensureMonitorAccess() {
-  const isProduction = process.env.NODE_ENV === "production";
-  const sessionUser = await getSessionUser();
-
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para monitorear cuotas." }, { status: 401 });
-  }
-
-  if (sessionUser.isMember && isProduction) {
-    return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para monitoreo administrativo." }, { status: 403 });
-  }
-
-  const adminToken = (await cookies()).get(ADMIN_ACCESS_COOKIE_NAME)?.value;
-
-  if (!adminToken && isProduction) {
-    return NextResponse.json({ ok: false, message: "Debes validar licencia administrativa para continuar." }, { status: 403 });
-  }
-
-  let adminVerified = false;
-
-  if (adminToken) {
-    try {
-      const adminAccess = await verifyAdminAccessToken(adminToken);
-      const hasAdminAccess =
-        adminAccess.scope === "admin_access" &&
-        adminAccess.userId.length > 0 &&
-        adminAccess.userId === String(sessionUser.userId ?? "");
-
-      if (!hasAdminAccess) {
-        return NextResponse.json({ ok: false, message: "Acceso administrativo inválido o expirado." }, { status: 403 });
-      }
-
-      adminVerified = true;
-    } catch {
-      return NextResponse.json({ ok: false, message: "Acceso administrativo inválido o expirado." }, { status: 403 });
-    }
-  }
-
-  // En desarrollo se conserva el acceso sin licencia (comportamiento previo),
-  // de modo que las credenciales se exponen con el mismo nivel de privilegio
-  // que ya exige este endpoint.
-  return { sessionUser, adminVerified: adminVerified || !isProduction };
-}
+// El control de acceso vive ahora en `api-guard.ts` (rol + step-up por permiso).
+// Antes este endpoint comprobaba la sesion y la licencia a mano.
 
 export async function GET(request: Request) {
-  const access = await ensureMonitorAccess();
-  if (access instanceof NextResponse) {
-    return access;
+  // Monitorear expedientes y cuotas de terceros: solo ADMIN.
+  const access = await requirePermission("expediente:read:any", { request });
+
+  if (!access.ok) {
+    return access.response;
   }
 
   const { searchParams } = new URL(request.url);
@@ -532,7 +491,7 @@ export async function GET(request: Request) {
         return NextResponse.json({ ok: true, found: false, message: "No existe expediente para esa cédula." });
       }
 
-      const mapped = await mapProfile(profile, { includeCredentials: access.adminVerified });
+      const mapped = await mapProfile(profile, { includeCredentials: access.licenseValidated });
       return NextResponse.json({
         ok: true,
         found: true,
@@ -571,9 +530,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const access = await ensureMonitorAccess();
-  if (access instanceof NextResponse) {
-    return access;
+  // Registrar pagos y abonos: ADMIN.
+  const access = await requirePermission("cuota:payment:register", { request });
+
+  if (!access.ok) {
+    return access.response;
   }
 
   let movementKind: "installment" | "advance" | "credentials" = "installment";
@@ -599,11 +560,12 @@ export async function POST(request: Request) {
     // rotar la clave SAN-MEMBER-XXXXXX del miembro. Queda guardada cifrada en el
     // expediente y, si el miembro ya tiene cuenta, también actualiza su acceso.
     if (kind === "credentials") {
-      if (!access.adminVerified) {
-        return NextResponse.json(
-          { ok: false, message: "Necesitas licencia administrativa para gestionar credenciales." },
-          { status: 403 },
-        );
+      // Rotar la clave de un miembro es mas sensible que registrar un pago:
+      // permiso propio + step-up (licencia administrativa validada).
+      const credencial = await requirePermission("credencial:rotate", { request });
+
+      if (!credencial.ok) {
+        return credencial.response;
       }
 
       if (!cedula) {
@@ -747,7 +709,7 @@ export async function POST(request: Request) {
           bank,
           method,
           note: note || null,
-          createdByUserId: String(access.sessionUser.userId ?? ""),
+          createdByUserId: access.user.userId,
         },
       });
     } else {
@@ -802,7 +764,7 @@ export async function POST(request: Request) {
           bank,
           method,
           note: note || null,
-          createdByUserId: String(access.sessionUser.userId ?? ""),
+          createdByUserId: access.user.userId,
         },
       });
     }
@@ -814,14 +776,20 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const access = await ensureMonitorAccess();
-  if (access instanceof NextResponse) {
-    return access;
-  }
-
   const { searchParams } = new URL(request.url);
   const cedula = sanitizeCedula(searchParams.get("cedula") ?? "");
   const installmentNumber = Number(searchParams.get("installmentNumber") ?? 0);
+
+  // Revertir un pago o eliminar un expediente es destructivo: permiso propio y
+  // step-up (licencia administrativa validada).
+  const access = await requirePermission(
+    installmentNumber > 0 ? "cuota:payment:revert" : "expediente:delete",
+    { request },
+  );
+
+  if (!access.ok) {
+    return access.response;
+  }
 
   if (!cedula) {
     return NextResponse.json({ ok: false, message: "Debes indicar la cédula del participante a eliminar." }, { status: 400 });

@@ -1,14 +1,13 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
+import { requireSession } from "@/lib/api-guard";
 import {
   ADMIN_ACCESS_COOKIE_NAME,
   createAdminAccessToken,
 } from "@/lib/auth";
 import { getAdminSecurityConfig } from "@/lib/admin-config";
 import { recordAudit } from "@/lib/audit";
-import { prisma } from "@/lib/prisma";
 import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
-import { getSessionUser } from "@/lib/session";
 
 type AdminPayload = {
   username?: string;
@@ -27,14 +26,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const sessionUser = await getSessionUser();
+  // La licencia es un step-up: exige una sesion valida ya iniciada (firma +
+  // tokenVersion + cuenta activa). Antes se comprobaba la sesion a mano.
+  const session = await requireSession();
 
-  if (!sessionUser?.userId) {
-    return NextResponse.json({ ok: false, message: "Debes iniciar sesión para validar acceso de administrador." }, { status: 401 });
-  }
-
-  if (sessionUser.isMember && process.env.NODE_ENV === "production") {
-    return NextResponse.json({ ok: false, message: "Tu perfil no tiene permisos para acceso administrativo." }, { status: 403 });
+  if (!session.ok) {
+    return session.response;
   }
 
   const body = (await request.json()) as AdminPayload;
@@ -83,12 +80,19 @@ export async function POST(request: Request) {
   }
 
   // La licencia es un step-up: solo tiene sentido para una cuenta ADMIN.
-  const cuenta = await prisma.user.findUnique({
-    where: { id: String(sessionUser.userId) },
-    select: { tokenVersion: true, role: true },
-  });
+  if (session.user.role !== "ADMIN") {
+    await recordAudit({
+      action: "ADMIN_LICENSE_FAILED",
+      actor: {
+        userId: session.user.userId,
+        email: session.user.email,
+        role: session.user.role,
+      },
+      metadata: { motivo: "rol" },
+      success: false,
+      request,
+    });
 
-  if (!cuenta || cuenta.role !== "ADMIN") {
     return NextResponse.json(
       { ok: false, message: "Tu cuenta no tiene el rol administrativo requerido." },
       { status: 403 }
@@ -101,10 +105,10 @@ export async function POST(request: Request) {
   });
 
   const adminAccessToken = await createAdminAccessToken({
-    sub: String(sessionUser.userId),
-    email: sessionUser.email,
+    sub: session.user.userId,
+    email: session.user.email,
     // Ligada a esta sesion: un logout global invalida tambien la licencia.
-    tokenVersion: cuenta.tokenVersion,
+    tokenVersion: session.user.tokenVersion,
   });
 
   response.cookies.set({
@@ -114,7 +118,19 @@ export async function POST(request: Request) {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24,
+    // La licencia es un step-up de corta duracion (4 h), no una sesion.
+    maxAge: 60 * 60 * 4,
+  });
+
+  await recordAudit({
+    action: "ADMIN_LICENSE_SUCCESS",
+    actor: {
+      userId: session.user.userId,
+      email: session.user.email,
+      role: session.user.role,
+    },
+    metadata: { duracionHoras: 4 },
+    request,
   });
 
   return response;
