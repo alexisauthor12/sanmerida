@@ -8,6 +8,46 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Rol efectivo de una cuenta. No existe un rol OPERATOR: todo el personal es
+/// ADMIN (ver docs/SEGURIDAD_INTEGRAL.md 13.2).
+enum UserRole {
+  /// Registro inicial publico (`/register`): catalogo, precios y feed publicado.
+  /// NUNCA accede a expedientes, documentos ni cuotas de nadie.
+  PROSPECT
+  /// Miembro oficial con expediente: solo lo suyo.
+  MEMBER
+  /// Unico rol con poder. Opera con licencia administrativa (step-up).
+  ADMIN
+}
+
+/// Acciones auditables (docs/SEGURIDAD_INTEGRAL.md seccion 6).
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_REVOKED
+  ADMIN_LICENSE_SUCCESS
+  ADMIN_LICENSE_FAILED
+  EXPEDIENTE_READ
+  EXPEDIENTE_CREATE
+  EXPEDIENTE_UPDATE
+  EXPEDIENTE_DELETE
+  DOCUMENTO_READ
+  DOCUMENTO_UPLOAD
+  DOCUMENTO_SCAN
+  DOCUMENTO_DELETE
+  CREDENCIAL_READ
+  CREDENCIAL_ROTATE
+  CUOTA_PAYMENT_REGISTER
+  CUOTA_PAYMENT_REVERT
+  FINANCIAMIENTO_UPDATE
+  NOVEDAD_CREATE
+  NOVEDAD_UPDATE
+  NOVEDAD_DELETE
+  GRUPO_EXPORT
+  RATE_LIMIT_BLOCK
+}
+
 model User {
   id             String   @id @default(cuid())
   nombre         String
@@ -15,8 +55,27 @@ model User {
   email          String   @unique
   telefono       String
   passwordHash   String
+
+  /// Rol efectivo del sistema. Sustituye a `isMember` como fuente de verdad.
+  role           UserRole @default(PROSPECT)
+
+  /// Compatibilidad temporal con el codigo existente: se mantiene sincronizado
+  /// con `role` (MEMBER => true) hasta la Fase 2.
   isMember       Boolean  @default(false)
+
+  /// Revocacion de sesiones: el JWT lleva este valor y se compara contra la base
+  /// de datos en cada peticion. Incrementarlo invalida todas las sesiones.
+  tokenVersion   Int      @default(1)
+
+  /// Anti fuerza bruta y trazabilidad de acceso.
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  passwordChangedAt DateTime?
+
   memberProfile  MemberProfile?
+  auditLogs      AuditLog[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -172,4 +231,42 @@ model MotoFinancing {
   activo            Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+/// Registro de auditoria: quien hizo que, sobre que, cuando y desde donde.
+///
+/// La aplicacion SOLO inserta (nunca actualiza ni borra filas individuales). La
+/// limpieza se hace por retencion con `scripts/purge-audit-log.mjs`.
+///
+/// Nunca se guardan datos sensibles en claro: la cedula va enmascarada en
+/// `targetLabel` (ver docs/SEGURIDAD_INTEGRAL.md 6.3).
+model AuditLog {
+  id          String      @id @default(cuid())
+  action      AuditAction
+
+  /// Quien lo hizo. `actorEmail` queda "congelado" para que el registro siga
+  /// siendo legible aunque la cuenta se elimine despues (onDelete: SetNull).
+  actorUserId String?
+  actor       User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorEmail  String?
+  actorRole   String?
+
+  /// Sobre que se hizo: "MemberProfile" | "MemberAsset" | "InstallmentPayment" | ...
+  targetType  String?
+  targetId    String?
+  targetLabel String?
+
+  /// Detalle NO sensible. Se rechazan claves como password, memberKey o token.
+  metadata    Json?
+
+  ip          String?
+  userAgent   String?
+
+  success     Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+
+  @@index([createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([action, createdAt])
 }
