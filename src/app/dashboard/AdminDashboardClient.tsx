@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import SavedLocationPreview, { MissingLocationPreview } from "@/app/components/SavedLocationPreview";
+import AuditoriaView from "./AuditoriaView";
 import { computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
 import {
   Activity,
@@ -3221,6 +3222,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     { id: "financiados", label: "Financiados", icon: Users },
     { id: "contratos", label: "Contratos", icon: FileCheck2 },
     { id: "novedades", label: "Novedades", icon: Newspaper },
+    { id: "auditoria", label: "Auditoría", icon: ShieldCheck },
     { id: "register-user", label: "Register user", icon: UserPlus },
   ] as const;
 
@@ -3328,6 +3330,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
       sectionId === "financiamiento" ||
       sectionId === "financiados" ||
       sectionId === "contratos" ||
+      sectionId === "auditoria" ||
       sectionId === "register-user"
     ) {
       setActiveSection(sectionId);
@@ -6731,6 +6734,12 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
             </div>
           </article>
         </section>
+        )}
+
+        {activeSection === "auditoria" && (
+          <section id="auditoria" className="scroll-mt-24">
+            <AuditoriaView />
+          </section>
         )}
 
         {activeSection === "resumen" && (
