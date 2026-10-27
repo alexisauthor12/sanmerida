@@ -1140,7 +1140,19 @@ es el mecanismo que impide que el hueco de `/api/member-files/*` se repita.
 - Los metadatos rechazan claves sensibles conocidas (`password`, `memberKey`,
   `token`, `cipher`).
 
-### 11.6 Prueba de intrusion guiada (manual, antes de cada release mayor)
+### 11.6 Prueba de intrusion (automatizada + guiada)
+
+**19 de los casos estan automatizados** en `scripts/prueba-intrusion.mjs` (`npm run
+test:intrusion`): los que no necesitan credenciales. Cubre cabeceras de seguridad, rutas
+protegidas sin sesion, tokens firmados con otro secreto, la politica de contrasenas, el
+consentimiento y el colector de CSP. Comprobado contra el Worker desplegado: **19/19**.
+
+Los **12 casos que necesitan una cuenta de prueba** se siguen haciendo a mano; el script
+los lista al final de su salida.
+
+> Antes de ejecutarla, confirma que el dominio sirve de verdad la aplicacion
+> (`OPERACIONES_PRODUCCION.md` 9.10). Contra un dominio que no es el proyecto, todo
+> responde 404 y la prueba no dice nada util.
 
 Lista de casos que se ejecutan a mano contra el entorno de produccion, con el
 resultado esperado:

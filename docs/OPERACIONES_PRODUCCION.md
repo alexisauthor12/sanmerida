@@ -618,7 +618,60 @@ certificado publico ya valida con la CA del sistema, y forzar la de Supabase lo 
 `tests/db-ssl.test.mjs` tiene un guardian que falla si vuelve a aparecer en `scripts/`.
 
 
-### 9.10 Variables de entorno de los scripts
+### 9.10 Comprobar que el dominio sirve de verdad la aplicación
+
+**Antes de dar un despliegue por bueno, hay que confirmar que el dominio apunta al
+Worker.** El 27/10/2026 se comprobó que `www.sanmerida.com` **no** sirve este proyecto:
+
+```
+$ curl.exe -s -D - -o NUL https://www.sanmerida.com/
+HTTP/1.1 200 OK
+Server: nginx                 <-- NO es un Worker
+
+$ Resolve-DnsName sanmerida.com -Type NS
+ns-1521.awsdns-62.org         <-- Route 53, no Cloudflare
+$ Resolve-DnsName www.sanmerida.com -Type CNAME
+sites.apts247.info            <-- otro sitio, sin relación
+```
+
+Es decir: el Worker se despliega correctamente en
+`https://sanmerida-com.alexruizrondon.workers.dev`, pero ese dominio es **de otro sitio
+web**. Un despliegue perfecto no sirve de nada si el tráfico de los usuarios no llega a él.
+
+**Comprobación (30 segundos):**
+
+```powershell
+curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "Server|strict-transport"
+```
+
+Si no aparece `strict-transport-security`, o el `Server` no es de Cloudflare, ese dominio
+no está sirviendo el Worker.
+
+**Arreglo:** en el panel de Cloudflare, *Workers & Pages* → `sanmerida-com` → *Settings* →
+*Domains & Routes* → *Add* → *Custom Domain*. Requiere que la zona DNS esté en **esa misma
+cuenta** de Cloudflare (los nameservers del dominio deben ser los de Cloudflare). Si el DNS
+vive en otro proveedor, hay que mover la zona o crear un `CNAME` al `workers.dev` (menos
+limpio: se pierde el WAF, el Access y el certificado gestionado).
+
+### 9.11 Prueba de intrusión automatizada
+
+19 casos que **no necesitan credenciales** (los que cualquiera puede intentar desde
+internet): cabeceras, rutas protegidas sin sesión, tokens firmados con otro secreto,
+política de contraseñas, consentimiento y el colector de CSP.
+
+```powershell
+npm run test:intrusion                                    # el Worker desplegado
+node scripts/prueba-intrusion.mjs https://tu-dominio.com   # un dominio concreto
+```
+
+No escribe nada: todos los POST usan datos que deben rechazarse **antes** de tocar la base
+de datos. Los 12 casos que sí necesitan una cuenta de prueba se listan al final de la
+salida; están en `docs/SEGURIDAD_INTEGRAL.md` 11.6.
+
+> **Ojo con el dominio.** Si se apunta a un dominio que no sirve la aplicación, todo
+> responde 404 y la prueba no dice nada útil (ver 9.10).
+
+### 9.12 Variables de entorno de los scripts
 
 | Variable | Para que |
 |---|---|

@@ -21,6 +21,7 @@
     "db:seed:alexis": "node scripts/seed-alexis.mjs",
     "db:security:status": "node scripts/backfill-user-roles.mjs",
     "db:security:migrate": "prisma db push && node scripts/backfill-user-roles.mjs --apply",
+    "test:intrusion": "node scripts/prueba-intrusion.mjs",
     "supabase:init": "npx supabase init",
     "supabase:link": "npx supabase link",
     "supabase:db:push": "npx supabase db push",
