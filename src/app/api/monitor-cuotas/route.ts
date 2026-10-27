@@ -20,6 +20,7 @@ import {
   encryptMemberKeyWithEnv,
 } from "@/lib/member-key-secret.mjs";
 import { prisma } from "@/lib/prisma";
+import { aNumeroOpcional } from "@/lib/member-pii.mjs";
 
 type MonitorClient = {
   id: string;
@@ -213,12 +214,14 @@ async function mapProfile(
   references: string | null;
   ubicacionLink: string | null;
   referenciaLink: string | null;
-  ubicacionLat: number | null;
-  ubicacionLng: number | null;
-  referenciaLat: number | null;
-  referenciaLng: number | null;
-  referencia2Lat: number | null;
-  referencia2Lng: number | null;
+  // La columna guarda texto cifrado; en tiempo de ejecucion la extension de Prisma ya
+  // lo ha descifrado a numero. Se aceptan las dos formas y se normaliza al mapear.
+  ubicacionLat: string | number | null;
+  ubicacionLng: string | number | null;
+  referenciaLat: string | number | null;
+  referenciaLng: string | number | null;
+  referencia2Lat: string | number | null;
+  referencia2Lng: string | number | null;
   monthlyAmount: number | null;
   termMonths: number | null;
   installmentCount: number | null;
@@ -409,12 +412,12 @@ async function mapProfile(
     references: profile.references || "No registradas",
     ubicacionLink: profile.ubicacionLink || "",
     referenciaLink: profile.referenciaLink || "",
-    ubicacionLat: profile.ubicacionLat ?? null,
-    ubicacionLng: profile.ubicacionLng ?? null,
-    referenciaLat: profile.referenciaLat ?? null,
-    referenciaLng: profile.referenciaLng ?? null,
-    referencia2Lat: profile.referencia2Lat ?? null,
-    referencia2Lng: profile.referencia2Lng ?? null,
+    ubicacionLat: aNumeroOpcional(profile.ubicacionLat),
+    ubicacionLng: aNumeroOpcional(profile.ubicacionLng),
+    referenciaLat: aNumeroOpcional(profile.referenciaLat),
+    referenciaLng: aNumeroOpcional(profile.referenciaLng),
+    referencia2Lat: aNumeroOpcional(profile.referencia2Lat),
+    referencia2Lng: aNumeroOpcional(profile.referencia2Lng),
     fechaIngreso: toDmy(profile.createdAt),
     motoMarca: profile.motoMarca || "Por asignar",
     motoModelo: profile.motoModelo || "Por asignar",

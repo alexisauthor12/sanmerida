@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { memberPiiExtension } from "./prisma-pii.mjs";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
@@ -78,13 +79,22 @@ function createPrismaClient() {
     maxUses: 1,
   });
 
-  return new PrismaClient({
+  const cliente = new PrismaClient({
     adapter,
     log:
       process.env.NODE_ENV === "development"
         ? ["error", "warn"]
         : ["error"],
   });
+
+  // Cifrado a nivel de columna de los datos personales (`docs/SEGURIDAD_INTEGRAL.md` 3.3).
+  // Se aplica en el unico sitio donde se construye el cliente: asi ningun punto de
+  // llamada tiene que acordarse de cifrar al guardar ni de descifrar al leer.
+  //
+  // El cast es a proposito: la extension no anade superficie nueva (solo intercepta
+  // consultas), asi que el cliente sigue siendo un `PrismaClient` para el resto de la
+  // aplicacion y no hay que tocar ni un tipo.
+  return cliente.$extends(memberPiiExtension) as unknown as PrismaClient;
 }
 
 export function getPrisma() {

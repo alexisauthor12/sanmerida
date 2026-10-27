@@ -312,18 +312,21 @@ export async function POST(request: Request) {
       empresa,
       operationalGroup,
       references,
-      ubicacionLat: hasUbicacion ? ubicacionLat : null,
-      ubicacionLng: hasUbicacion ? ubicacionLng : null,
+      // Los campos de ubicacion se guardan cifrados, asi que la columna es de texto:
+      // la extension de Prisma los cifra al vuelo. El enlace se construye antes, con
+      // los numeros, para que siga siendo una URL legible al descifrarla.
+      ubicacionLat: hasUbicacion ? String(ubicacionLat) : null,
+      ubicacionLng: hasUbicacion ? String(ubicacionLng) : null,
       ubicacionLink: hasUbicacion
         ? `https://www.google.com/maps?q=${ubicacionLat.toFixed(6)},${ubicacionLng.toFixed(6)}`
         : null,
-      referenciaLat: hasReferencia ? referenciaLat : null,
-      referenciaLng: hasReferencia ? referenciaLng : null,
+      referenciaLat: hasReferencia ? String(referenciaLat) : null,
+      referenciaLng: hasReferencia ? String(referenciaLng) : null,
       referenciaLink: hasReferencia
         ? `https://www.google.com/maps?q=${referenciaLat.toFixed(6)},${referenciaLng.toFixed(6)}`
         : null,
-      referencia2Lat: hasReferencia2 ? referencia2Lat : null,
-      referencia2Lng: hasReferencia2 ? referencia2Lng : null,
+      referencia2Lat: hasReferencia2 ? String(referencia2Lat) : null,
+      referencia2Lng: hasReferencia2 ? String(referencia2Lng) : null,
       referencia2Link: hasReferencia2
         ? `https://www.google.com/maps?q=${referencia2Lat.toFixed(6)},${referencia2Lng.toFixed(6)}`
         : null,

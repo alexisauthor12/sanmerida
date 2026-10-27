@@ -175,14 +175,26 @@ model MemberProfile {
   paymentAmount     Float?
   paymentDate       String?
   references        String?
-  ubicacionLat      Float?
-  ubicacionLng      Float?
+  // Datos personales cifrados a nivel de columna (`docs/SEGURIDAD_INTEGRAL.md` 3.3).
+  //
+  // Se guardan como texto con el formato `enc:v1:<iv>:<cifrado>` (AES-256-GCM). Por eso
+  // las coordenadas son `String?` y no `Float?`: el valor almacenado es el texto cifrado,
+  // no un numero. La aplicacion las sigue viendo como numeros: la extension de Prisma
+  // (`src/lib/prisma-pii.ts`) cifra al guardar y descifra al leer.
+  //
+  // Los tres campos de cada pin van juntos a proposito: `*Link` lleva las coordenadas
+  // escritas dentro, asi que cifrar solo lat/lng no protegeria nada.
+  //
+  // OJO: sin `MEMBER_KEY_ENCRYPTION_SECRET` (o el `AUTH_SECRET` heredado) estos valores
+  // no se pueden recuperar. El respaldo previo a la migracion es obligatorio.
+  ubicacionLat      String?
+  ubicacionLng      String?
   ubicacionLink     String?
-  referenciaLat     Float?
-  referenciaLng     Float?
+  referenciaLat     String?
+  referenciaLng     String?
   referenciaLink    String?
-  referencia2Lat    Float?
-  referencia2Lng    Float?
+  referencia2Lat    String?
+  referencia2Lng    String?
   referencia2Link   String?
   assets            MemberAsset[]
   installmentPayments InstallmentPayment[]
