@@ -523,3 +523,48 @@ variables de entorno del build en claro** (incluida la contrasena de la base, la
   `.env.local`.
 - Si el equipo se pierde o se comparte, hay que **rotar** `AUTH_SECRET`,
   `SUPABASE_SERVICE_ROLE_KEY` y la contrasena de la base.
+
+### 9.7 Rotacion periodica de secretos y de la licencia
+
+Calendario recomendado: **cada 6 meses** y **siempre** tras una salida de personal,
+una sospecha de filtracion o la perdida de un equipo.
+
+| Secreto | Como se rota | Efecto |
+|---|---|---|
+| `AUTH_SECRET` | `npx wrangler secret put AUTH_SECRET` | **Se invalidan TODAS las sesiones**: todo el mundo vuelve a entrar. Hacerlo en horario de baja actividad |
+| `ADMIN_LICENSE_HASH` | `node scripts/set-admin-license.mjs` y publicar el hash | La licencia anterior deja de servir; el step-up caduca en 4 h |
+| `MEMBER_KEY_ENCRYPTION_SECRET` | Seccion 9.2 | Ninguno: la app abre lo antiguo con el secreto heredado hasta que se recifra |
+| `SUPABASE_SERVICE_ROLE_KEY` | Rotar en el panel de Supabase y `wrangler secret put` | Reinicia el Worker; los documentos siguen accesibles |
+| `BACKUP_PASSPHRASE` | Elegir una nueva | **Guardar la anterior**: los respaldos viejos se descifran con la de su fecha |
+| Contrasena de la base | Rotar en Supabase y actualizar `DATABASE_URL`/Hyperdrive | Reinicia el Worker |
+
+Comprobar despues de cada rotacion: un login real, una descarga de documento y
+`node scripts/check-storage-integrity.mjs`.
+
+### 9.8 Cloudflare: WAF y Access delante de `/admin` (pendiente de configurar)
+
+Esta es la unica capa que no se puede versionar en el repositorio: se configura en
+el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
+(rol + licencia + 2FA), que ya esta endurecida.
+
+**WAF (gratuito en el plan Free):**
+
+1. Panel de Cloudflare -> *Security* -> *WAF* -> *Custom rules*.
+2. Regla 1: si `http.request.uri.path starts_with "/admin"` **y**
+   `cf.threat_score gt 14` -> *Block*.
+3. Regla 2: si `http.request.uri.path starts_with "/api/auth"` **y**
+   `http.request.method eq "POST"` **y** `cf.threat_score gt 25` -> *Managed
+   challenge*.
+4. Activar *Bot Fight Mode* si el plan lo permite.
+
+**Cloudflare Access (Zero Trust):**
+
+1. *Zero Trust* -> *Access* -> *Applications* -> *Add an application* -> *Self-hosted*.
+2. Aplicacion sobre `sanmerida.com/admin` (y `/admin/*`).
+3. Politica: *Allow* solo para los correos del equipo administrativo.
+4. Metodo de identidad: One-time PIN por correo (no exige IdP externo) o Google.
+5. Session duration: 8 horas.
+6. **Probar primero en una ruta de prueba**: si la politica queda mal, deja a todo
+   el equipo fuera del panel.
+
+Cuando este activo, anotarlo aqui con la fecha.

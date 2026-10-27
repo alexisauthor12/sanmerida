@@ -1207,10 +1207,10 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | Paso | Entrega |
 |---|---|
 | 3.1 | 2FA (TOTP) obligatorio para ADMIN — **hecho** (seccion 7.6; disponible para todos los roles) |
-| 3.2 | Cloudflare WAF + Access delante de `/admin` |
+| 3.2 | Cloudflare WAF + Access delante de `/admin` — **runbook listo** (`OPERACIONES_PRODUCCION.md` 9.8); se configura en el panel, no en el repositorio |
 | 3.3 | Cifrado a nivel de columna para PII sensible |
 | 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion — **hecho** (seccion 13.7) |
-| 3.5 | Rotacion periodica de secretos y de la licencia administrativa (runbook) |
+| 3.5 | Rotacion periodica de secretos y de la licencia administrativa (runbook) — **hecho** (`OPERACIONES_PRODUCCION.md` 9.7) |
 
 ---
 
