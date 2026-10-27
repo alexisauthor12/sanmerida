@@ -592,6 +592,7 @@ Nueva pestana **Auditoria** en `/admin` (permiso `auditoria:read`, con step-up):
 | `/api/auth/logout` | `LOGOUT` |
 | `/api/auth/admin-license` | `ADMIN_LICENSE_SUCCESS`, `ADMIN_LICENSE_FAILED`, `TOTP_CHALLENGE_FAILED` |
 | `/api/auth/totp/*` | `TOTP_ENABLED`, `TOTP_DISABLED`, `TOTP_CHALLENGE_FAILED`, `RECOVERY_CODE_USED` |
+| `/api/auth/cambiar-contrasena` | `PASSWORD_CHANGED` (tambien cuando falla, con `motivo`) |
 | `/api/member-panel/correccion` | `CORRECCION_SOLICITADA` |
 | `scripts/purge-audit-log.mjs` | `AUDIT_PURGE` (permanente: la purga no se borra a si misma) |
 | `/api/member-panel` | `EXPEDIENTE_READ` (propio o ajeno, con el actor) |
@@ -686,20 +687,37 @@ Ademas del limite por ventana, en la tabla `User`:
   *antes* de bcrypt (no se gasta CPU en una cuenta bloqueada) y un codigo TOTP
   incorrecto tambien cuenta como intento fallido.
 
-### 7.5 Politica de contrasenas (equipo)
+### 7.5 Politica de contrasenas (equipo) — **implementado**
 
-| Regla | Valor |
-|---|---|
-| Longitud minima | 12 caracteres (hoy 8) |
-| Complejidad | Al menos 3 de 4: minuscula, mayuscula, digito, simbolo |
-| Lista negra | Contrasenas comunes y derivadas del nombre/correo del usuario |
-| Reutilizacion | Se rechaza la contrasena actual al cambiarla |
-| Almacenamiento | bcrypt coste 12 (ya correcto) |
-| Cambio | Invalida todas las sesiones (`tokenVersion++`) |
+| Regla | Valor | Donde |
+|---|---|---|
+| Longitud minima | 12 caracteres | `src/lib/password-policy.mjs` |
+| Complejidad | Al menos 3 de 4: minuscula, mayuscula, digito, simbolo | idem |
+| Lista negra | 43 contrasenas comunes + palabras del negocio (`sanmerida`, `merida`, `moto`, `financiamiento`) | idem |
+| Datos del usuario | Se rechaza si contiene el nombre, el apellido o el correo (normalizado, sin acentos ni separadores) | idem |
+| Tope de longitud | 72 bytes: **bcrypt solo procesa los primeros 72**, asi que se rechaza en vez de truncar en silencio | idem |
+| Reutilizacion | Se rechaza la contrasena actual al cambiarla | `POST /api/auth/cambiar-contrasena` |
+| Almacenamiento | bcrypt coste 12 | ya existia |
+| Cambio | Exige la contrasena actual e invalida **todas** las sesiones (`tokenVersion++`) | idem |
+
+El modulo es **puro** y lo comparten servidor y cliente: la interfaz muestra la misma
+lista de requisitos que aplica el servidor, asi que nadie tiene que adivinar por que le
+rechazan la contrasena.
+
+> **Hueco que no estaba en la lista.** Antes de esto **no existia ningun flujo de cambio
+> de contrasena** en la aplicacion: una contrasena filtrada solo se podia cambiar con
+> `scripts/reset-member-password.mjs` desde el equipo. Y el unico control era
+> `password.length < 8`. Ahora el cambio lo puede hacer el propio titular desde el panel
+> (`CambiarContrasena.tsx`) y el registro publico aplica la misma politica.
+
+Exigir la contrasena actual es deliberado: una **sesion robada no basta** para apropiarse
+de la cuenta. El endpoint tiene rate limiting propio (5 intentos por identidad / 15 min)
+para que no se convierta en un oraculo de la contrasena actual.
 
 La clave de miembro `SAN-MEMBER-XXXXXX` mantiene su formato por operativa, pero se
 **refuerza** con: rate limiting dedicado, bloqueo progresivo, alerta al
 administrador cuando se agota el 50% de los intentos y auditoria de cada intento.
+
 
 ### 7.6 Segundo factor (TOTP) — **implementado**
 
@@ -899,14 +917,53 @@ bloqueado.
 envuelve en una transaccion. En el colector se inserta **fila a fila**. `deleteMany`
 si funciona (lo usa la purga).
 
-### 9.2 Transporte y base de datos
+### 9.2 Transporte y base de datos — **implementado** (con una salvedad verificada)
 
-| Punto | Hoy | Objetivo |
+| Punto | Antes | Ahora |
 |---|---|---|
-| Conexion a PostgreSQL | `ssl: { rejectUnauthorized: false }` en `register` y `admin-direct-login` | **Validacion de certificado activa**. En produccion se usa Hyperdrive (tunel interno); donde se use `DATABASE_URL` directo, `rejectUnauthorized: true` |
-| Driver | `pg` directo en 2 rutas, Prisma en el resto | Todo por Prisma + Hyperdrive; se eliminan las conexiones ad-hoc |
-| Secretos en logs | Se imprimen nombres de origen y hosts | Solo el origen (`HYPERDRIVE`/`DATABASE_URL`), nunca el host ni la cadena de conexion |
-| Cookies | `secure` condicionado a `NODE_ENV` | `secure` **siempre** en produccion; `__Host-` en los nombres |
+| Conexion a PostgreSQL | `ssl: { rejectUnauthorized: false }` en `register`, `admin-direct-login` y **9 scripts** | `rejectUnauthorized: true` en todo `src/`; los scripts usan `src/lib/db-ssl.mjs` |
+| Driver | `pg` directo en 2 rutas, Prisma en el resto | Todo por Prisma + Hyperdrive; las conexiones ad-hoc desaparecieron |
+| Secretos en logs | Se imprimian nombres de origen y hosts | Solo el origen (`HYPERDRIVE`/`DATABASE_URL`), nunca el host |
+| Cookies | `secure` condicionado a `NODE_ENV` | `secure` siempre en produccion |
+
+#### La salvedad: `rejectUnauthorized: true` a secas **rompe** los scripts
+
+Comprobado al cerrar el hallazgo F. El pooler de Supabase (Supavisor, **puertos 6543 y
+5432**) presenta un certificado **autofirmado en la cadena**:
+
+```
+Error: self-signed certificate in certificate chain
+  code: 'SELF_SIGNED_CERT_IN_CHAIN'
+```
+
+No es un proxy TLS del equipo: desde la misma maquina, `api.github.com`,
+`registry.npmjs.org` y `supabase.com` validan sin problema. Es el endpoint de Supabase.
+
+La documentacion oficial de Supabase lo dice con estas palabras: `sslmode=require`
+*"encrypts the connection but doesn't verify the server, so it doesn't stop a
+man-in-the-middle attack"*, y para verificar hay que **descargar el certificado raiz**
+del proyecto (Database settings → SSL configuration) y apuntar el driver a el
+(`sslmode=verify-full` + `sslrootcert`).
+
+Por eso `src/lib/db-ssl.mjs` tiene tres modos, y **ninguno degrada la seguridad en
+silencio**:
+
+| Modo | Como se activa | Que hace |
+|---|---|---|
+| `ca` | `DATABASE_CA_CERT=/ruta/raiz.crt` | **Lo correcto**: valida contra la CA del proyecto |
+| `extra-ca` | `NODE_EXTRA_CA_CERTS=/ruta/raiz.crt` | Igual, resuelto por Node |
+| `validar` | (por defecto) | Valida contra la CA del sistema; si no puede, **falla** con la pista de como arreglarlo |
+| `sin-verificar` | `DATABASE_SSL_NO_VERIFY=1` | Cifra sin verificar: acto deliberado y **avisado en pantalla** |
+
+El modo `sin-verificar` existe a proposito. La alternativa (fallar siempre) empuja a la
+gente a borrar la comprobacion a mano —que es exactamente como nacio el hallazgo F— o a
+dejar de hacer respaldos. Un respaldo que no se hace es peor resultado de seguridad que
+un respaldo sobre un canal cifrado sin verificar. Lo que no puede pasar es que ocurra
+**sin que nadie lo sepa**.
+
+`tests/db-ssl.test.mjs` incluye un guardian que **falla si algun script vuelve a escribir
+`rejectUnauthorized: false` a mano**.
+
 
 ### 9.3 Almacenamiento de expedientes (ya solido, se refuerza)
 
@@ -1097,6 +1154,14 @@ resultado esperado:
 | 13 | Descarga masiva de documentos (mas de 120 en 5 min) | `429` |
 | 14 | ADMIN **sin** licencia valida intenta ver credenciales o borrar | `403` |
 | 15 | Cuenta PROSPECT consulta `/api/monitor-cuotas` | `403` |
+| 16 | `POST /api/auth/register` con una contrasena de 8 caracteres | `400` |
+| 17 | `POST /api/auth/register` sin aceptar el aviso de tratamiento de datos | `400` |
+| 18 | `POST /api/auth/cambiar-contrasena` con la contrasena actual incorrecta | `401` |
+| 19 | `POST /api/auth/cambiar-contrasena` con una contrasena comun (`Password1234`) | `400` |
+| 20 | Cambiar la contrasena y **reutilizar la cookie anterior** | `401` (se cerraron todas las sesiones) |
+| 21 | Intentar editar el expediente propio desde el panel del miembro | no existe ruta: solo `GET /api/member-panel` y `POST .../correccion` |
+| 22 | Desactivar el 2FA sin aportar el codigo | `400`/`403` |
+| 23 | `POST /api/csp-report` con 1 MB de cuerpo | rechazado sin tumbar el endpoint |
 
 ---
 
@@ -1157,6 +1222,21 @@ un informe sin directiva se ignore, que la Reporting API descarte lo que no sea
 
 ---
 
+### 11.14 `tests/password-policy.test.mjs` — la politica de contrasenas
+
+Cubre los umbrales (12 caracteres, 3 de 4 tipos, 72 bytes), las contrasenas comunes, las
+derivadas de los datos del propio usuario (nombre, apellido, correo, nombre del negocio) con
+acentos y mayusculas incluidas, y que el tope de 72 bytes **rechaza en vez de truncar** (es
+el limite real de bcrypt). Comprueba tambien que `evaluatePassword` no revienta con `null`,
+`{}` o `[]`: lo llama la interfaz en cada pulsacion.
+
+### 11.15 `tests/db-ssl.test.mjs` — validacion TLS de los scripts
+
+Verifica los tres modos de `src/lib/db-ssl.mjs` y que **desactivar la validacion exige un
+acto deliberado y siempre avisa** (`"0"`, `""` o `"no"` no la desactivan). Incluye un
+**guardian** que recorre `scripts/` y falla si algun archivo vuelve a escribir
+`rejectUnauthorized: false` a mano: es la unica forma de que el hallazgo F no reaparezca.
+
 ## 12) Plan de implementacion por fases
 
 Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
@@ -1173,7 +1253,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 0.5 | `/api/auth/register` crea **PROSPECT** (sin permisos de expediente) y el dashboard del prospecto queda limitado a catalogo, feed y novedades | `Seguridad: rol PROSPECT para el registro publico` |
 | 0.6 | `admin-direct-login` eliminado | `Seguridad: eliminar la ruta de login administrativo directo` |
 | 0.7 | `lib/rate-limit.ts` + limites en los endpoints de login | `Seguridad: rate limiting y bloqueo progresivo` |
-| 0.8 | TLS validado; errores genericos; sin PII en logs | `Seguridad: TLS validado y errores sin detalle interno` |
+| 0.8 | TLS validado; errores genericos; sin PII en logs — **hecho, con salvedad** (seccion 9.2: el pooler de Supabase no valida contra la CA de Node, hace falta `DATABASE_CA_CERT`) | `Seguridad: TLS validado y errores sin detalle interno` |
 
 > La Fase 0 es la que convierte el sistema en "no vulnerable de forma trivial". Se
 > puede desplegar el mismo dia, paso a paso.
@@ -1187,7 +1267,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 1.3 | Revocacion de sesiones (`tokenVersion`) + "cerrar todas las sesiones" | `Seguridad: revocacion de sesiones` |
 | 1.4 | Cabeceras de seguridad globales (primero `Report-Only`, luego firme) | `Seguridad: cabeceras de seguridad globales` |
 | 1.5 | Anti-enumeracion y respuestas uniformes | `Seguridad: respuestas uniformes anti-enumeracion` |
-| 1.6 | Politica de contrasenas + `lib/password-policy.mjs` + pruebas | `Seguridad: politica de contrasenas` |
+| 1.6 | Politica de contrasenas + `lib/password-policy.mjs` + pruebas — **hecho** (seccion 7.5; incluye el flujo de cambio, que **no existia**) | `Seguridad: politica de contrasenas` |
 | 1.7 | Panel de auditoria en `/admin` (permiso `auditoria:read`) | `Admin: panel de auditoria` |
 
 ### Fase 2 — Operacion y cumplimiento
@@ -1199,7 +1279,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 2.3 | Backups cifrados + prueba de restauracion documentada — **hecho** (seccion 9.4) |
 | 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
 | 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) — **hecho** (seccion 6.4; el resumen queda como `AUDIT_PURGE`) |
-| 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes |
+| 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes — **hecho** (seccion 10 del documento de operaciones: deteccion, contencion, evaluacion, notificacion y plazos) |
 | 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros — **hecho** (seccion 10.2, punto 6; tambien en el registro publico) |
 
 ### Fase 3 — Defensa en profundidad

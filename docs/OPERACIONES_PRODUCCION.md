@@ -16,7 +16,9 @@ NODE_ENV="production"
 ```
 
 Notas:
-- `DATABASE_URL` debe apuntar a Postgres productivo con TLS según proveedor.
+- `DATABASE_URL` debe apuntar a Postgres productivo con TLS según proveedor. Con Supabase,
+  define ademas `DATABASE_CA_CERT` (seccion 9.9): su pooler **no** valida contra la CA de
+  Node, y sin ese archivo los scripts fallan al conectar.
 - `ADMIN_LICENSE_HASH` debe ser bcrypt valido (`$2a$`, `$2b$`, `$2y$`).
 - Rota `AUTH_SECRET` y `ADMIN_LICENSE_HASH` ante incidentes o cambios de personal.
 - `AUTH_SECRET` firma las sesiones (JWT) y ademas deriva la clave AES-256-GCM con
@@ -568,3 +570,192 @@ el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
    el equipo fuera del panel.
 
 Cuando este activo, anotarlo aqui con la fecha.
+
+### 9.9 Validacion TLS en los scripts
+
+Los scripts que hablan con Postgres usan `src/lib/db-ssl.mjs`. **Nunca escribas
+`rejectUnauthorized: false` a mano**: `tests/db-ssl.test.mjs` tiene un guardian que falla
+si vuelve a aparecer en `scripts/`.
+
+**Por que no basta con `rejectUnauthorized: true`.** El pooler de Supabase presenta un
+certificado autofirmado en la cadena, asi que `pg` no puede validarlo contra la lista de CAs
+de Node:
+
+```
+Error: self-signed certificate in certificate chain
+  code: 'SELF_SIGNED_CERT_IN_CHAIN'
+```
+
+Es del endpoint, no de tu red (GitHub, npm y supabase.com validan bien desde el mismo
+equipo). La documentacion de Supabase lo dice: `sslmode=require` cifra pero **no verifica**;
+para verificar hay que darle la CA del proyecto.
+
+**Arreglo correcto (una sola vez):**
+
+1. Supabase → *Database settings* → *SSL configuration* → descargar el certificado.
+2. Guardarlo **fuera del repositorio** (por ejemplo `D:\certs\supabase-raiz.crt`).
+3. Definirlo en el entorno antes de ejecutar los scripts:
+
+```powershell
+$env:DATABASE_CA_CERT = "D:\certs\supabase-raiz.crt"
+node scripts/backup-documents.mjs
+```
+
+Alternativa equivalente, a nivel de Node: `$env:NODE_EXTRA_CA_CERTS = "D:\certs\..."`.
+
+**Si no se puede conseguir la CA**, queda la salida de emergencia, que es un acto
+deliberado y **avisa en pantalla cada vez que se usa**:
+
+```powershell
+$env:DATABASE_SSL_NO_VERIFY = "1"
+node scripts/backup-documents.mjs
+```
+
+Cifra sin verificar. Es lo mismo que hace `sslmode=require`, y es peor que validar, pero es
+**mucho mejor que dejar de hacer respaldos** o que borrar la comprobacion del codigo.
+
+### 9.10 Variables de entorno de los scripts
+
+| Variable | Para que |
+|---|---|
+| `DATABASE_CA_CERT` | Ruta al certificado raiz del proyecto (recomendado, seccion 9.9) |
+| `NODE_EXTRA_CA_CERTS` | Lo mismo, resuelto por Node |
+| `DATABASE_SSL_NO_VERIFY` | `1` = cifra sin verificar (salida de emergencia, avisa) |
+| `BACKUP_PASSPHRASE` | Contrasena del respaldo cifrado (>= 16 caracteres, seccion 8.1) |
+| `MEMBER_KEY_ENCRYPTION_SECRET` | Secreto de las credenciales de miembros (seccion 9.2) |
+| `LOCAL_DATABASE_URL` | Postgres local, solo para los scripts de migracion |
+
+## 10) Procedimiento de incidentes de seguridad
+
+> Cierra el paso **2.6** de `docs/SEGURIDAD_INTEGRAL.md`. El objetivo no es tener un
+> documento: es que **la primera hora no se improvise**. Quien detecta algo abre aqui y
+> sigue los pasos en orden.
+
+### 10.1 Que cuenta como incidente
+
+No hay que decidir si "es grave": se activa el procedimiento y se decide despues.
+
+| Situacion | Por que es incidente |
+|---|---|
+| Un expediente leido o descargado por quien no debia | Fuga de datos personales |
+| Documentos o filas que aparecen borrados o alterados | Integridad comprometida |
+| Alerta del panel de auditoria (descargas masivas, intentos fallidos, acceso fuera de horario) | Posible acceso no autorizado |
+| `LOGIN_FAILED` en rafaga contra una cuenta o desde una IP | Fuerza bruta |
+| Una cuenta con 2FA desactivado sin que su titular lo hiciera | La cuenta esta comprometida |
+| El respaldo cifrado no se puede abrir, o falta | Perdida de datos |
+| Una credencial pudo filtrarse (`AUTH_SECRET`, licencia, contrasena, `SUPABASE_SERVICE_ROLE_KEY`) | Hay que rotar |
+| El sitio muestra contenido que nadie publico | Defacement |
+
+### 10.2 Los primeros 60 minutos
+
+**Regla de oro: primero se corta, despues se investiga.** Investigar con el atacante dentro
+le da tiempo a borrar sus huellas.
+
+1. **Anotar la hora exacta** del primer indicio. Todo lo demas se cronometra desde ahi.
+2. **No borrar nada.** Ni logs, ni archivos, ni la fila de auditoria. Si hay que sacar algo
+   de circulacion, se **mueve**, no se elimina.
+3. **Contener sin destruir la evidencia**, en este orden y parando cuando el incidente quede
+   cortado:
+   - **Cortar la cuenta afectada**: incrementar `tokenVersion` invalida sus sesiones al
+     instante. Desde el panel, o con `node scripts/reset-member-password.mjs`.
+   - **Cortar la licencia administrativa** si el incidente es del lado del equipo:
+     `node scripts/set-admin-license.mjs "<nueva>"` + publicar el hash + desplegar.
+   - **Revertir el despliegue** si hay defacement o ejecucion de codigo: en el panel de
+     Cloudflare, *Workers* → *Deployments* → *Rollback* a la version anterior. Tarda
+     segundos y es reversible.
+   - **Poner Cloudflare Access delante de `/admin`** (seccion 9.8) si aun no esta: deja el
+     panel cerrado a todo el mundo menos a los correos del equipo.
+4. **Avisar a una segunda persona.** Un incidente llevado por una sola persona pierde
+   detalles, y ademas nadie deberia ser juez de su propio error.
+
+### 10.3 Evaluacion del alcance
+
+La tabla `AuditLog` es la herramienta principal. No se puede consultar sin `auditoria:read`
+(rol ADMIN + licencia) y **no se puede editar ni borrar desde la aplicacion**.
+
+| Pregunta | Donde se responde |
+|---|---|
+| ¿Que cuentas entraron? | `LOGIN_SUCCESS` / `LOGIN_FAILED` en `/api/auditoria` |
+| ¿Que expedientes se leyeron? | `EXPEDIENTE_READ` / `DOCUMENTO_READ` / `DOCUMENTO_DOWNLOAD` |
+| ¿Que se modifico? | `EXPEDIENTE_UPDATE`, `PASSWORD_CHANGED`, `TOTP_*`, `CORRECCION_*` |
+| ¿Se descargo mucho de golpe? | Conteo de `DOCUMENTO_DOWNLOAD` por actor y hora |
+| ¿Desde donde? | `ip` y `userAgent` de cada fila (`src/lib/request-info.mjs`) |
+| ¿Se purgo algo a mano? | `AUDIT_PURGE` |
+
+Pasos:
+
+1. Acotar la **ventana**: desde el primer indicio hasta la contencion.
+2. Listar **actores** implicados y **expedientes** tocados. Eso define a quien hay que avisar.
+3. Comprobar **integridad**: `node scripts/check-storage-integrity.mjs` (documentos faltantes,
+   tamanos distintos) y comparar contra el ultimo respaldo.
+4. Decidir si hay **datos personales comprometidos**. Si los hay, la notificacion de 10.5 no
+   es opcional.
+
+> Limite conocido y asumido: la auditoria guarda **el hecho y los metadatos, no el
+> contenido**. Si alguien leyo un expediente, se sabe; no se sabe "que se llevo".
+
+### 10.4 Erradicacion y recuperacion
+
+1. **Cerrar la puerta** por la que entro: rotar la credencial concreta (seccion 9.7), corregir
+   el fallo o desplegar la version corregida.
+2. **Rotar todo lo que estuvo al alcance**, aunque no haya prueba de uso:
+   - Contrasena del titular afectado (panel, o `scripts/reset-member-password.mjs`).
+   - Segundo factor: `node scripts/reset-user-totp.mjs` (borra secreto y codigos de
+     recuperacion; la persona lo vuelve a configurar).
+   - Si el incidente toca el servidor: `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET`
+     (seccion 9.2). Rotar `MEMBER_KEY_ENCRYPTION_SECRET` deja las credenciales de miembros
+     pendientes de regenerar; rotar `AUTH_SECRET` invalida **todas** las sesiones.
+   - Licencia administrativa si el equipo esta implicado.
+3. **Restaurar** solo si hay datos perdidos, y desde un respaldo **verificado**:
+   `node scripts/restore-backup.mjs --verificar <archivo>` primero (no escribe nada).
+4. **Vigilar 7 dias.** Repasar `/api/auditoria` a diario: un atacante contenido suele volver
+   por otra via.
+
+### 10.5 Notificacion
+
+| A quien | Cuando | Plazo |
+|---|---|---|
+| Responsable del sistema | En cuanto se confirma | Inmediato |
+| Personas afectadas | Si sus datos personales quedaron expuestos | **Sin demora injustificada**; en la practica, antes de 72 h |
+| Autoridad de proteccion de datos | Si la brecha es de riesgo para los derechos de las personas | **72 h** desde que se tiene constancia |
+
+Una brecha "de riesgo" no exige que alguien haya usado los datos: basta con que puedan
+usarse. Ante la duda, se notifica.
+
+**Que se comunica** (nada mas): que paso, cuando, que datos, que se ha hecho ya, que debe
+hacer la persona afectada (cambiar la contrasena, revisar sus movimientos) y a quien
+preguntar. **Sin** detalles tecnicos que den pistas y **sin** culpar a la persona afectada.
+
+Si el incidente implica delito (extorsion, robo de datos, suplantacion), se presenta la
+denuncia: este procedimiento no la sustituye.
+
+### 10.6 Playbooks por tipo
+
+| Tipo | Contencion inmediata | Erradicacion |
+|---|---|---|
+| **Credencial filtrada** | Bloquear la cuenta y avisar al titular | Contrasena nueva + 2FA + `tokenVersion++` |
+| **Sesion robada** (cookie) | `tokenVersion++` corta todas las sesiones de esa cuenta | Cambiar contrasena; revisar `PASSWORD_CHANGED` |
+| **2FA desactivado por un tercero** | Cortar el acceso y resetear el TOTP | Contrasena nueva + TOTP nuevo; revisar que leyo |
+| **Acceso indebido al panel** | Cloudflare Access (9.8) + rotar la licencia | Corregir el fallo; revisar los `EXPEDIENTE_*` de la ventana |
+| **Fuga de documentos** | Identificar las claves afectadas y cortar el acceso | Notificar (10.5); revisar el bucket y la papelera |
+| **Ransomware / equipo comprometido** | Aislar el equipo de la red; **no** pagar | Restaurar desde respaldo verificado; rotar **todos** los secretos |
+| **Perdida de datos** | Parar las escrituras; medir el alcance | `restore-backup.mjs --carpeta` (verifica sha256 contra el manifiesto) |
+| **Caida del proveedor** | Nada que contener; comunicar | Esperar; el respaldo es local |
+
+### 10.7 Cierre: informe y aprendizaje
+
+En un plazo de 7 dias desde el cierre, dejar por escrito (y anotarlo aqui):
+
+1. Cronologia: deteccion, contencion, erradicacion, recuperacion (con horas).
+2. **Causa raiz**, en una frase. Si la respuesta es "un despiste", hay que buscar el control
+   que falto, no la persona.
+3. Alcance real: cuentas, expedientes, datos.
+4. Que se hizo y que quedo pendiente.
+5. **Que control se anade** para que no vuelva a pasar. Si la respuesta es "mas cuidado", no
+   es una respuesta: hace falta un test, un limite, un permiso o un aviso.
+
+Ese ultimo punto es el unico que evita repetir el incidente: los cinco anteriores explican lo
+que paso, el sexto lo previene.
+
+
+
