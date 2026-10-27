@@ -18,6 +18,7 @@ import path from "path";
 import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { createClient } from "@supabase/supabase-js";
+import { BACKUP_PASSPHRASE_ENV, encryptBackup } from "../src/lib/backup-crypto.mjs";
 
 loadEnv({ path: [".env.local", ".env"] });
 
@@ -25,6 +26,8 @@ const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "member-documents";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
+// Si esta definida, TODO el respaldo se cifra (docs/SEGURIDAD_INTEGRAL.md 2.3).
+const passphrase = process.env[BACKUP_PASSPHRASE_ENV] ?? "";
 
 if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
   console.error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY.");
@@ -77,14 +80,25 @@ for (const object of objects) {
 
   const bytes = Buffer.from(await data.arrayBuffer());
   const filePath = path.join(targetDir, ...object.key.split("/"));
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
 
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, bytes);
+
+  if (passphrase) {
+    // Los documentos son lo mas sensible del respaldo (cedulas, contratos, fotos).
+    // Si hay contrasena, el archivo en claro NO llega a escribirse en disco.
+    await writeFile(`${filePath}.enc`, await encryptBackup(bytes, passphrase));
+  } else {
+    await writeFile(filePath, bytes);
+  }
 
   manifestObjects.push({
     key: object.key,
     size: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    // Hash del contenido EN CLARO: permite verificar el archivo despues de
+    // descifrarlo con `restore-backup.mjs --carpeta`.
+    sha256,
+    cifrado: Boolean(passphrase),
   });
 
   totalBytes += bytes.length;
@@ -122,19 +136,34 @@ if (DATABASE_URL) {
   }
 }
 
-await writeFile(
-  path.join(targetDir, "manifest.json"),
-  JSON.stringify(
-    {
-      generatedAt: new Date().toISOString(),
-      bucket: BUCKET,
-      objects: manifestObjects,
-      database,
-    },
-    null,
-    2,
-  ),
+const manifiesto = JSON.stringify(
+  {
+    generatedAt: new Date().toISOString(),
+    bucket: BUCKET,
+    cifrado: Boolean(passphrase),
+    objects: manifestObjects,
+    database,
+  },
+  null,
+  2,
 );
 
-console.log(`[backup] manifiesto: ${path.join(targetDir, "manifest.json")}`);
+// El manifiesto tambien lleva cedulas y nombres: se cifra junto con los documentos.
+if (passphrase) {
+  await writeFile(
+    path.join(targetDir, "manifest.json.enc"),
+    await encryptBackup(new TextEncoder().encode(manifiesto), passphrase),
+  );
+
+  console.log(`[backup] manifiesto cifrado: ${path.join(targetDir, "manifest.json.enc")}`);
+} else {
+  await writeFile(path.join(targetDir, "manifest.json"), manifiesto);
+
+  console.warn(
+    `[backup] AVISO: respaldo SIN cifrar. Define ${BACKUP_PASSPHRASE_ENV} para cifrarlo ` +
+      "antes de sacarlo del equipo.",
+  );
+  console.log(`[backup] manifiesto: ${path.join(targetDir, "manifest.json")}`);
+}
+
 console.log("[backup] LISTO");

@@ -889,6 +889,36 @@ Refuerzos:
 | Nombres de archivo | Se normalizan y se generan con token aleatorio (ya implementado): se mantiene |
 | Antivirus | Fase 2: escaneo opcional (ClamAV en un Worker externo o servicio gestionado) antes de publicar el objeto |
 
+### 9.4 Respaldos cifrados — **implementado**
+
+Un respaldo contiene lo mas sensible del sistema: `passwordHash` de todas las
+cuentas, cedulas, telefonos, direcciones y los documentos de los expedientes.
+Guardarlo en claro en un disco externo o en la nube es **trasladar** el riesgo de
+la base de datos a un pendrive.
+
+`src/lib/backup-crypto.mjs` (modulo puro sobre Web Crypto):
+
+| Pieza | Detalle |
+|---|---|
+| Cifrado | **AES-256-GCM** (autenticado: un byte alterado invalida el archivo) |
+| Derivacion de clave | **PBKDF2-SHA256**, 250.000 iteraciones, `salt` aleatorio por archivo |
+| `iv` | Aleatorio por archivo: dos respaldos del mismo contenido no se parecen |
+| Contrasena | `BACKUP_PASSPHRASE`, minimo 16 caracteres (fail-closed) |
+| Formato | JSON en claro con el sobre dentro, para poder inspeccionarlo sin descifrar |
+
+- `scripts/backup-users.mjs` y `scripts/backup-documents.mjs` cifran **si** hay
+  `BACKUP_PASSPHRASE`. Sin ella avisan por consola de que el respaldo queda en claro.
+- En los documentos, el archivo en claro **no llega a escribirse**: se cifra en
+  memoria. El manifiesto tambien se cifra, porque lleva cedulas y nombres.
+- `scripts/restore-backup.mjs` descifra y **verifica** contra el `sha256` del
+  manifiesto (el hash es del contenido en claro, asi que detecta alteraciones).
+
+**Prueba de restauracion (obligatoria):** un respaldo que no se ha probado a
+restaurar no es un respaldo. `node scripts/restore-backup.mjs --verificar <archivo>`
+descifra en memoria sin escribir nada: confirma que la contrasena abre el archivo.
+Verificado con `tests/backup-crypto.test.mjs` y con una prueba real de ciclo completo
+(cifrar → verificar → restaurar).
+
 ---
 
 ## 10) Datos personales y cumplimiento
@@ -1072,6 +1102,15 @@ Verifica que el campo este en la lista cerrada (no se puede pedir "corregir" una
 contrasena ni la cedula), que el detalle tenga un minimo util, que se normalicen
 espacios y mayusculas, y que un detalle larguisimo se recorte en vez de reventar.
 
+### 11.12 `tests/backup-crypto.test.mjs` — cifrado de respaldos
+
+Verifica el ciclo completo y los fallos: ida y vuelta con contenido real, que el
+archivo cifrado **no** contenga el contenido en claro, que dos cifrados del mismo
+contenido no se parezcan (salt e `iv` aleatorios), que una contrasena incorrecta no
+abra, que **un solo byte alterado** invalide el archivo (AES-GCM autentica), que se
+exija una contrasena de 16 caracteres como minimo y que un respaldo de 1 MB se
+descifre intacto.
+
 ---
 
 ## 12) Plan de implementacion por fases
@@ -1113,7 +1152,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 |---|---|
 | 2.1 | `npm audit` + parcheo de las 2 criticas y 21 altas |
 | 2.2 | Validacion por magic bytes en las subidas — **hecho** (`src/lib/file-signature.mjs`, seccion 8.8) |
-| 2.3 | Backups cifrados + prueba de restauracion documentada |
+| 2.3 | Backups cifrados + prueba de restauracion documentada — **hecho** (seccion 9.4) |
 | 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
 | 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) — **hecho** (seccion 6.4; el resumen queda como `AUDIT_PURGE`) |
 | 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes |

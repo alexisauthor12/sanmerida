@@ -389,14 +389,50 @@ Documentos (expedientes):
 - `node scripts/purge-trash.mjs --apply` para vaciar la papelera (30 dias).
 - Guardar el respaldo fuera del equipo (nube o disco externo).
 
+### 8.1 Cifrado de los respaldos (obligatorio antes de sacarlos del equipo)
+
+Define `BACKUP_PASSPHRASE` (minimo 16 caracteres) antes de respaldar. Con ella, los
+dos scripts escriben `.enc` cifrados con AES-256-GCM y clave derivada por
+PBKDF2-SHA256 (250.000 iteraciones):
+
+```
+BACKUP_PASSPHRASE='...' node scripts/backup-users.mjs
+BACKUP_PASSPHRASE='...' node scripts/backup-documents.mjs
+```
+
+Sin la variable, el respaldo se escribe **en claro** y el script lo avisa por
+consola. Un respaldo en claro contiene los hashes de contrasena de todas las cuentas
+y los documentos de los expedientes.
+
+**Guardar la contrasena en un gestor de contrasenas.** No hay puerta trasera: sin
+ella el respaldo es ilegible para siempre.
+
+### 8.2 Prueba de restauracion (mensual)
+
+```
+node scripts/restore-backup.mjs --verificar backups/users-<fecha>.json.enc
+node scripts/restore-backup.mjs --carpeta backups/documents/<fecha>
+```
+
+- `--verificar` descifra **en memoria** y no escribe nada: confirma que la
+  contrasena abre el archivo y muestra su `sha256`.
+- `--carpeta` descifra todos los `.enc` y comprueba cada documento contra el
+  `sha256` del manifiesto. Cualquier archivo alterado se marca como `ALTERADO` y
+  cualquier ilegible como `FALLO`.
+
+Anotar la fecha de la ultima prueba: un respaldo que no se ha probado a restaurar
+no es un respaldo.
+
 ## 9) Mantenimiento programado
 
 | Tarea | Cuando | Comando |
 |---|---|---|
+| Respaldo de la base de datos | Semanal | `node scripts/backup-users.mjs` |
+| Respaldo de documentos | Semanal | `node scripts/backup-documents.mjs` |
+| **Prueba de restauracion** | Mensual | `node scripts/restore-backup.mjs --verificar <archivo>` |
 | Purgar la auditoria por retencion | Mensual | `node scripts/purge-audit-log.mjs --apply` |
 | Vaciar la papelera | Semanal | `node scripts/purge-trash.mjs --apply` |
 | Verificar integridad del almacenamiento | Mensual | `node scripts/check-storage-integrity.mjs` |
-| Respaldo de usuarios | Antes de tocar el esquema | `node scripts/backup-users.mjs` |
 
 Todos los scripts de escritura son **simulacro por defecto**: sin `--apply` no
 cambian nada. Leer siempre la salida del simulacro antes de aplicarlo.

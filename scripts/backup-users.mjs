@@ -15,6 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { BACKUP_PASSPHRASE_ENV, encryptBackup } from "../src/lib/backup-crypto.mjs";
 
 function clean(value) {
   return value?.trim().replace(/^['"]|['"]$/g, "") ?? "";
@@ -50,15 +51,33 @@ try {
   await mkdir(destino, { recursive: true });
 
   const marca = new Date().toISOString().replace(/[:.]/g, "-");
-  const archivo = path.join(destino, `users-${marca}.json`);
-
-  await writeFile(
-    archivo,
-    JSON.stringify({ generadoEn: new Date().toISOString(), total: usuarios.length, usuarios }, null, 2),
-    "utf8",
+  const contenido = JSON.stringify(
+    { generadoEn: new Date().toISOString(), total: usuarios.length, usuarios },
+    null,
+    2,
   );
 
-  console.log(`Respaldo creado: backups/users-${marca}.json`);
+  const passphrase = process.env[BACKUP_PASSPHRASE_ENV] ?? "";
+
+  if (passphrase) {
+    // El respaldo lleva `passwordHash` de TODAS las cuentas: en claro no se escribe
+    // nunca si hay contrasena configurada (docs/SEGURIDAD_INTEGRAL.md 2.3).
+    const sobre = await encryptBackup(new TextEncoder().encode(contenido), passphrase);
+
+    await writeFile(path.join(destino, `users-${marca}.json.enc`), sobre);
+
+    console.log(`Respaldo CIFRADO creado: backups/users-${marca}.json.enc`);
+    console.log("Para restaurarlo: node scripts/restore-backup.mjs <archivo>");
+  } else {
+    await writeFile(path.join(destino, `users-${marca}.json`), contenido, "utf8");
+
+    console.warn(
+      `AVISO: el respaldo se ha escrito SIN cifrar. Define ${BACKUP_PASSPHRASE_ENV} ` +
+        "para cifrarlo antes de sacarlo del equipo.",
+    );
+    console.log(`Respaldo creado: backups/users-${marca}.json`);
+  }
+
   console.log(`Filas respaldadas: ${usuarios.length}`);
 } catch (error) {
   console.error("No se pudo respaldar la tabla User.");
