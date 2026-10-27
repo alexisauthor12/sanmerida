@@ -12,6 +12,22 @@ type CatalogVideo = {
   src: string;
 };
 
+/**
+ * Lee el cuerpo de una respuesta como JSON **sin lanzar**.
+ *
+ * Una respuesta que no es JSON (una pagina 404 de Next, un 502 de la plataforma) hacia
+ * fallar `response.json()`, y ese fallo acababa mostrandose como "error de conexion"
+ * aunque la conexion hubiera ido perfectamente. Con esto, el error que se enseña es el
+ * de verdad: el estado HTTP y el mensaje del servidor si lo trae.
+ */
+async function leerJson<T>(respuesta: Response): Promise<T | null> {
+  try {
+    return (await respuesta.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 function CatalogVideoCard({
   video,
   sectionActive,
@@ -122,7 +138,10 @@ export default function Home() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
   const [adminLicense, setAdminLicense] = useState("");
+  const [adminTotpCode, setAdminTotpCode] = useState("");
+  const [needsAdminTotp, setNeedsAdminTotp] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminMessage, setAdminMessage] = useState("");
   const [contactForm, setContactForm] = useState({ nombre: "", email: "", mensaje: "" });
@@ -356,8 +375,8 @@ export default function Home() {
   };
 
   const handleAdminDirectLogin = async () => {
-    if (!adminUsername.trim() || !adminLicense.trim()) {
-      setAdminMessage("Ingresa usuario admin y licencia.");
+    if (!adminUsername.trim() || !adminPassword) {
+      setAdminMessage("Ingresa tu usuario y tu contraseña.");
       return;
     }
 
@@ -365,19 +384,46 @@ export default function Home() {
     setAdminMessage("");
 
     try {
-      const response = await fetch("/api/auth/admin-direct-login", {
+      // 1) Sesión normal, con usuario y contraseña.
+      //
+      // Antes esta pantalla llamaba a `/api/auth/admin-direct-login`, que entraba con
+      // usuario + licencia y **sin contraseña**. Esa ruta se eliminó por ser un agujero
+      // (docs/SEGURIDAD_INTEGRAL.md, paso 0.6), y esta pantalla se quedó sin actualizar:
+      // el 404 resultante hacia fallar `response.json()` y el error se mostraba como
+      // "error de conexión", que no tenía nada que ver.
+      const loginResponse = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: adminUsername.trim(),
-          license: adminLicense.trim(),
+          password: adminPassword,
+          totpCode: adminTotpCode.trim() || undefined,
+          portal: "account",
         }),
       });
 
-      const result = (await response.json()) as { ok?: boolean; message?: string };
+      const login = await leerJson<{
+        ok?: boolean;
+        message?: string;
+        requiresTotp?: boolean;
+      }>(loginResponse);
 
-      if (!response.ok || !result.ok) {
-        setAdminMessage(result.message || "No fue posible iniciar sesión administrativa.");
+      if (login?.requiresTotp) {
+        setNeedsAdminTotp(true);
+        setAdminMessage(login.message ?? "Ingresa el código de tu aplicación de autenticación.");
+        return;
+      }
+
+      if (!loginResponse.ok || !login?.ok) {
+        setAdminMessage(
+          login?.message ?? `No se pudo iniciar sesión (error ${loginResponse.status}).`,
+        );
+        return;
+      }
+
+      // 2) La licencia es el step-up: exige la sesión de arriba y el rol ADMIN.
+      if (!adminLicense.trim()) {
+        setAdminMessage("Sesión iniciada. Ahora ingresa la licencia administrativa.");
         return;
       }
 
@@ -387,19 +433,33 @@ export default function Home() {
         body: JSON.stringify({
           username: adminUsername.trim(),
           license: adminLicense.trim(),
+          totpCode: adminTotpCode.trim() || undefined,
         }),
       });
 
-      const licenseResult = (await licenseResponse.json()) as { ok?: boolean; message?: string };
+      const licencia = await leerJson<{
+        ok?: boolean;
+        message?: string;
+        requiresTotp?: boolean;
+      }>(licenseResponse);
 
-      if (!licenseResponse.ok || !licenseResult.ok) {
-        setAdminMessage(licenseResult.message || "Sesión iniciada, pero no se pudo validar licencia admin.");
+      if (licencia?.requiresTotp) {
+        setNeedsAdminTotp(true);
+        setAdminMessage(licencia.message ?? "Ingresa el código de tu aplicación de autenticación.");
+        return;
+      }
+
+      if (!licenseResponse.ok || !licencia?.ok) {
+        setAdminMessage(
+          licencia?.message ?? `No se pudo validar la licencia (error ${licenseResponse.status}).`,
+        );
         return;
       }
 
       window.location.href = "/admin";
     } catch {
-      setAdminMessage("Error de conexión al iniciar sesión administrativa.");
+      // Aquí sí es un fallo de red de verdad: la petición no llegó a completarse.
+      setAdminMessage("No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.");
     } finally {
       setAdminLoading(false);
     }
@@ -521,7 +581,9 @@ export default function Home() {
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-emerald-300">Acceso seguro</p>
                     <h3 className="mt-2 text-2xl font-light tracking-[0.05em] text-white">Acceso Admin</h3>
-                    <p className="mt-2 text-sm text-white/70">Inicia sesión directa para control total administrativo.</p>
+                    <p className="mt-2 text-sm text-white/70">
+                      Entra con tu usuario y contraseña, y confirma con la licencia administrativa.
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -546,16 +608,47 @@ export default function Home() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Licencia</label>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Contraseña</label>
+                    <input
+                      value={adminPassword}
+                      onChange={(event) => setAdminPassword(event.target.value)}
+                      type="password"
+                      autoComplete="current-password"
+                      className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-emerald-300/60"
+                      placeholder="Ingresa tu contraseña"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Licencia administrativa</label>
                     <input
                       value={adminLicense}
                       onChange={(event) => setAdminLicense(event.target.value)}
                       type="password"
-                      autoComplete="current-password"
+                      autoComplete="off"
                       className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-emerald-300/60"
                       placeholder="Ingresa tu licencia"
                     />
                   </div>
+
+                  {needsAdminTotp ? (
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Código de verificación</label>
+                      <input
+                        value={adminTotpCode}
+                        onChange={(event) => setAdminTotpCode(event.target.value)}
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm tracking-[0.3em] text-white outline-none transition focus:border-emerald-300/60"
+                        placeholder="000000"
+                      />
+                      <p className="mt-1 text-xs text-white/50">
+                        El de tu aplicación de autenticación, o uno de tus códigos de recuperación.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
 
                 {adminMessage ? <p className="mt-3 text-sm text-amber-300">{adminMessage}</p> : null}
