@@ -35,12 +35,18 @@ import { prisma } from "@/lib/prisma";
  *   y no obtiene ningun permiso sobre datos de terceros.
  * - `/api/dev/create-member-admin`: utilidad de desarrollo, responde 404 en
  *   cualquier entorno que no sea `development`.
+ * - `/api/csp-report`: los navegadores envian los informes de CSP **sin
+ *   credenciales**, asi que exigir sesion los descartaria todos. A cambio solo
+ *   acepta POST, responde siempre `204`, acota el cuerpo, filtra los campos a una
+ *   lista cerrada y tiene rate limiting por IP (ver
+ *   `src/app/api/csp-report/route.ts`).
  */
 export const PUBLIC_ROUTES = [
   "/api/auth/login",
   "/api/auth/logout",
   "/api/auth/register",
   "/api/dev/create-member-admin",
+  "/api/csp-report",
 ];
 
 export type SessionUser = {

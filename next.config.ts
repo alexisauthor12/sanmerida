@@ -43,6 +43,12 @@ const CSP_APLICADA = [
   "form-action 'self'",
   "object-src 'none'",
   "upgrade-insecure-requests",
+  // A donde van los informes. Sin esto la politica en modo informe no sirve de
+  // nada: nadie se enteraria de lo que habria bloqueado.
+  // `report-uri` esta obsoleto pero es el que entienden todos los navegadores;
+  // `report-to` es el moderno (necesita la cabecera `Reporting-Endpoints`).
+  "report-uri /api/csp-report",
+  "report-to csp-endpoint",
 ].join("; ");
 
 /**
@@ -70,6 +76,8 @@ const SECURITY_HEADERS = [
   },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
   { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
+  // Nombre del endpoint de informes que referencia `report-to` en la CSP.
+  { key: "Reporting-Endpoints", value: 'csp-endpoint="/api/csp-report"' },
   // CSP en firme: bloquea inyeccion de scripts externos, exfiltracion de datos,
   // objetos embebidos y clickjacking.
   { key: "Content-Security-Policy", value: CSP_APLICADA },

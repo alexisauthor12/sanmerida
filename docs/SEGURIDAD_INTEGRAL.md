@@ -852,16 +852,52 @@ Se agregan en `next.config.ts` con `headers()`, aplicadas a todas las rutas:
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | No filtra rutas con cedulas a terceros |
 | `Permissions-Policy` | `camera=(self), geolocation=(self), microphone=()` | Solo la app puede usar camara y ubicacion |
 | `Content-Security-Policy` | Politica estricta con `default-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'` | Mitiga XSS e inyeccion |
+| `Content-Security-Policy-Report-Only` | La misma politica **sin** `unsafe-inline` | Mide que romperia activarla, sin romper nada |
+| `Reporting-Endpoints` | `csp-endpoint="/api/csp-report"` | Da nombre al destino de `report-to` |
 | `Cross-Origin-Opener-Policy` | `same-origin` | Aisla el contexto de navegacion |
 | `X-Permitted-Cross-Domain-Policies` | `none` | Evita politicas heredadas de Flash/PDF |
 
 Consideraciones sobre la CSP:
 - Leaflet y el escaneo de imagenes en el cliente necesitan `blob:` y `data:` en
   `img-src`, y `worker-src 'self' blob:` para tesseract.js.
-- Los estilos de Tailwind requieren `style-src 'self' 'unsafe-inline'` (o un nonce
-  gestionado por el middleware si se quiere endurecer mas).
-- Se valida en modo `Content-Security-Policy-Report-Only` durante unos dias antes
-  de activarla en firme, para detectar bloqueos no previstos.
+- Los estilos de Tailwind requieren `style-src 'self' 'unsafe-inline'` mientras no
+  haya nonces. **Quitarlo no es solo cambiar la cabecera**: los `style={{...}}` de
+  React se renderizan como atributos `style`, que la CSP tambien gobierna. Hace
+  falta `style-src-elem` con nonce **y** `style-src-attr 'unsafe-inline'`.
+- La version estricta viaja en `Report-Only` **y con destino de informes**: sin
+  `report-uri`/`report-to` la politica no serviria de nada, porque nadie se
+  enteraria de lo que habria bloqueado (seccion 9.5).
+
+### 9.5 Informes de CSP — **implementado**
+
+Convertir `unsafe-inline` en algo retirable exige **datos**, no intuicion. La
+politica estricta se envia en modo informe y el navegador manda aqui lo que habria
+bloqueado.
+
+| Pieza | Archivo |
+|---|---|
+| Parseo (ambos formatos) | `src/lib/csp-report.mjs` |
+| Colector | `POST /api/csp-report` |
+| Resumen y diagnostico | `scripts/csp-report-summary.mjs` |
+| Retencion | `scripts/purge-audit-log.mjs` (ventana corta) |
+
+- Se aceptan los dos formatos que usan los navegadores: `application/csp-report`
+  (`{ "csp-report": {...} }`) y `application/reports+json` (`[{ type: "csp-violation" }]`).
+- El cuerpo lo controla el visitante, es decir, cualquiera: se conservan **solo**
+  campos de una lista cerrada, con tope de 300 caracteres, el cuerpo esta acotado a
+  64 KB y hay rate limiting por IP. Nada de lo que llega se ejecuta ni se devuelve.
+- La ruta es **publica a proposito**: los navegadores envian los informes sin
+  credenciales, asi que exigir sesion los descartaria todos. Responde siempre `204`.
+- Se guarda como **telemetria** (`CspViolation`), no como auditoria: no es prueba de
+  nada y no debe disparar las alertas de seguridad.
+- `node scripts/csp-report-summary.mjs --dias 30` agrega por directiva, recurso
+  bloqueado y pagina, y da un veredicto: si no hay violaciones de tipo `inline`, la
+  politica estricta ya se puede activar.
+
+**Nota de implementacion (costosa de descubrir):** el pooler de Supabase rechaza
+`createMany` de Prisma ("Unable to start a transaction in the given time") porque lo
+envuelve en una transaccion. En el colector se inserta **fila a fila**. `deleteMany`
+si funciona (lo usa la purga).
 
 ### 9.2 Transporte y base de datos
 
@@ -1110,6 +1146,14 @@ contenido no se parezcan (salt e `iv` aleatorios), que una contrasena incorrecta
 abra, que **un solo byte alterado** invalide el archivo (AES-GCM autentica), que se
 exija una contrasena de 16 caracteres como minimo y que un respaldo de 1 MB se
 descifre intacto.
+
+### 11.13 `tests/csp-report.test.mjs` — informes de CSP
+
+Verifica que se normalicen los **dos formatos** de los navegadores, que se
+**descarten** los campos fuera de la lista cerrada (incluido un `__proto__`
+envenenado y un `script-sample` con HTML), que se recorten los valores largos, que
+un informe sin directiva se ignore, que la Reporting API descarte lo que no sea
+`csp-violation` y que la funcion no reviente con entradas raras.
 
 ---
 

@@ -430,6 +430,7 @@ no es un respaldo.
 | Respaldo de la base de datos | Semanal | `node scripts/backup-users.mjs` |
 | Respaldo de documentos | Semanal | `node scripts/backup-documents.mjs` |
 | **Prueba de restauracion** | Mensual | `node scripts/restore-backup.mjs --verificar <archivo>` |
+| Revisar informes de CSP | Antes de activar la CSP estricta | `node scripts/csp-report-summary.mjs --dias 30` |
 | Purgar la auditoria por retencion | Mensual | `node scripts/purge-audit-log.mjs --apply` |
 | Vaciar la papelera | Semanal | `node scripts/purge-trash.mjs --apply` |
 | Verificar integridad del almacenamiento | Mensual | `node scripts/check-storage-integrity.mjs` |
@@ -493,7 +494,23 @@ No hay estado "resuelta" por solicitud: el cierre se deduce del `EXPEDIENTE_UPDA
 posterior. La solicitud original **no se borra nunca** salvo por la purga de
 retencion.
 
-### 9.5 La carpeta `.open-next/` es sensible
+### 9.5 Informes de CSP
+
+La politica estricta (sin `unsafe-inline`) viaja en modo informe y los navegadores
+mandan lo que habrian bloqueado a `/api/csp-report`. Para decidir si ya se puede
+activar:
+
+```
+node scripts/csp-report-summary.mjs --dias 30
+```
+
+Agrega por directiva, recurso bloqueado y pagina, y da un veredicto. Si aparece
+`inline` en `script-src` o `style-src`, **no** se activa todavia.
+
+Los informes se limpian con la ventana corta de `purge-audit-log.mjs` (son
+telemetria de alta rotacion, no auditoria).
+
+### 9.6 La carpeta `.open-next/` es sensible
 
 El build de OpenNext escribe `.open-next/cloudflare/next-env.mjs` con **las
 variables de entorno del build en claro** (incluida la contrasena de la base, la

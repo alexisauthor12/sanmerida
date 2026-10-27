@@ -188,6 +188,33 @@ model MemberProfile {
   updatedAt         DateTime      @updatedAt
 }
 
+/// Informe de violacion de CSP (`docs/SEGURIDAD_INTEGRAL.md` 9.1).
+///
+/// La politica estricta viaja en modo informe: estos registros son lo unico que
+/// permite saber que romperia activarla. Los manda el navegador del visitante, asi
+/// que son **telemetria**, no prueba de nada: se guardan con campos acotados y se
+/// limpian por retencion con `scripts/purge-audit-log.mjs`.
+model CspViolation {
+  id           String   @id @default(cuid())
+  /// Directiva que habria bloqueado la carga (p. ej. `script-src`).
+  directive    String
+  /// Que se intento cargar. Puede ser `inline`, `eval`, una URL...
+  blockedUri   String?
+  /// Pagina donde ocurrio.
+  documentUri  String?
+  sourceFile   String?
+  lineNumber   Int?
+  columnNumber Int?
+  /// `report` (solo informe) o `enforce` (politica en firme).
+  disposition  String   @default("report")
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([directive, createdAt])
+}
+
 model MemberAsset {
   id         String             @id @default(cuid())
   profileId  String

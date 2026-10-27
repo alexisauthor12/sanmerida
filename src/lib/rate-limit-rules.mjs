@@ -56,6 +56,12 @@ export const RATE_LIMIT_RULES = {
     ip: { limit: 20, windowSeconds: 300 },
     identity: { limit: 10, windowSeconds: 300 },
   },
+  // Los informes de CSP los manda el navegador de cada visitante. El limite es
+  // generoso (una pagina puede generar varios de golpe) pero existe: el cuerpo de
+  // un informe lo controla quien lo envia.
+  cspReport: {
+    ip: { limit: 120, windowSeconds: 300 },
+  },
 };
 
 /** Nombres de endpoint validos. */

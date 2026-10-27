@@ -24,6 +24,9 @@ const PUBLICAS = [
   "/api/auth/logout",
   "/api/auth/register",
   "/api/dev/create-member-admin",
+  // Los navegadores envian los informes de CSP sin credenciales: exigir sesion los
+  // descartaria todos. La ruta acota cuerpo, campos y frecuencia.
+  "/api/csp-report",
 ];
 
 /**

@@ -13,6 +13,9 @@
  * Las filas `AUDIT_PURGE` **nunca** se borran: son el registro de que la limpieza
  * se hizo y de cuanto se elimino.
  *
+ * Tambien limpia los informes de violacion de CSP (`CspViolation`), que son
+ * telemetria de alta rotacion, con la ventana corta.
+ *
  * Uso:
  *   node scripts/purge-audit-log.mjs                                  (simulacro)
  *   node scripts/purge-audit-log.mjs --apply
@@ -122,16 +125,24 @@ try {
     where: { createdAt: { lt: cortes.sesion }, action: { in: accionesDeSesion } },
   });
 
+  // Los informes de CSP son telemetria de alta rotacion: se limpian con la ventana
+  // mas corta de las dos.
+  const candidatosCsp = await prisma.cspViolation.count({
+    where: { createdAt: { lt: cortes.sesion } },
+  });
+
   console.log(`Registros de auditoria: ${totalAntes}`);
+  console.log(`Informes de CSP: ${await prisma.cspViolation.count()}`);
   console.log(`Corte general (${diasGenerales} dias): ${fecha(cortes.general)} -> ${candidatosGenerales} candidatos`);
   console.log(`Corte de sesion (${diasSesion} dias): ${fecha(cortes.sesion)} -> ${candidatosDeSesion} candidatos`);
+  console.log(`Informes de CSP fuera de la ventana de sesion: ${candidatosCsp} candidatos`);
   console.log("Las filas AUDIT_PURGE nunca se borran.");
 
   if (antes) {
     console.log(`(--before ${antesTexto}: el corte explicito se aplica a los dos grupos)`);
   }
 
-  const total = candidatosGenerales + candidatosDeSesion;
+  const total = candidatosGenerales + candidatosDeSesion + candidatosCsp;
 
   if (total === 0) {
     console.log("\nNo hay nada que purgar. Nada que hacer.");
@@ -149,7 +160,13 @@ try {
       where: { createdAt: { lt: cortes.sesion }, action: { in: accionesDeSesion } },
     });
 
-    const borrados = borradosGenerales.count + borradosDeSesion.count;
+    // Los informes de CSP son telemetria de alta rotacion: se limpian con la ventana
+    // mas corta de las dos.
+    const borradosCsp = await prisma.cspViolation.deleteMany({
+      where: { createdAt: { lt: cortes.sesion } },
+    });
+
+    const borrados = borradosGenerales.count + borradosDeSesion.count + borradosCsp.count;
 
     // Resumen permanente: la propia purga queda auditada y estas filas se excluyen
     // del borrado, de modo que siempre se puede reconstruir que se limpio y cuando.
@@ -162,9 +179,10 @@ try {
           borrados,
           generales: borradosGenerales.count,
           sesion: borradosDeSesion.count,
+          csp: borradosCsp.count,
           corteGeneral: fecha(cortes.general),
           corteSesion: fecha(cortes.sesion),
-          restantes: totalAntes - borrados,
+          restantes: totalAntes - borradosGenerales.count - borradosDeSesion.count,
         },
         success: true,
       },
