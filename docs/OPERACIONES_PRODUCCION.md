@@ -549,10 +549,9 @@ Esta es la unica capa que no se puede versionar en el repositorio: se configura 
 el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
 (rol + licencia + 2FA), que ya esta endurecida.
 
-> **Requisito previo: tener un dominio propio apuntando al Worker.** El WAF y el Access
-> se aplican sobre un hostname, y hoy la app solo responde en la URL de `workers.dev`,
-> que no los admite en el plan gratuito. Ver 9.10 para comprobarlo y para poner el
-> dominio. Mientras tanto, este runbook no se puede aplicar.
+> **El dominio de producción es `sanmeridajz.com`** y su zona DNS ya está en Cloudflare
+> (ver 9.10), así que este runbook se puede aplicar tal cual: solo hay que sustituir
+> `TU-DOMINIO` por `sanmeridajz.com`.
 
 **WAF (gratuito en el plan Free):**
 
@@ -567,7 +566,7 @@ el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
 **Cloudflare Access (Zero Trust):**
 
 1. *Zero Trust* -> *Access* -> *Applications* -> *Add an application* -> *Self-hosted*.
-2. Aplicacion sobre `TU-DOMINIO/admin` (y `/admin/*`).
+2. Aplicacion sobre `sanmeridajz.com/admin` (y `/admin/*`).
 3. Politica: *Allow* solo para los correos del equipo administrativo.
 4. Metodo de identidad: One-time PIN por correo (no exige IdP externo) o Google.
 5. Session duration: 8 horas.
@@ -623,53 +622,60 @@ certificado publico ya valida con la CA del sistema, y forzar la de Supabase lo 
 `tests/db-ssl.test.mjs` tiene un guardian que falla si vuelve a aparecer en `scripts/`.
 
 
-### 9.10 Comprobar que el dominio sirve de verdad la aplicación
+### 9.10 El dominio de producción es `sanmeridajz.com`
 
-**Antes de dar un despliegue por bueno, hay que confirmar que el dominio apunta al
-Worker.** Comprobado el 27/10/2026: **la aplicación solo se sirve en la URL de
-`workers.dev`. No hay ningún dominio propio apuntándole.**
+**El dominio real del proyecto es `sanmeridajz.com`, NO `sanmerida.com`.**
 
-| Objetivo probado | DNS | Estado | `Server` | ¿Es la app? |
-|---|---|---|---|---|
-| `sanmerida.com` | A `50.112.96.208` | 301 → www | nginx | **No** |
-| `www.sanmerida.com` | A `50.112.96.169` (CNAME a `sites.apts247.info`) | 200 | nginx | **No** |
-| `app` / `admin` / `panel` / `portal` / `clientes` / `dashboard` / `sistema` / `motos` / `staff` / `dev` / `staging` / `test` / `api` **.sanmerida.com** | no resuelven | — | — | No |
-| `sanmerida.com.ve`, `www.sanmerida.com.ve`, `sanmerida.ve` | no resuelven | — | — | No |
-| `sanmeridamotos.com`, `motossanmerida.com`, `sanmeridaca.com` | no resuelven | — | — | No |
-| `sanmerida-com.pages.dev` | no responde | — | — | No (no hay proyecto Pages) |
-| Supabase Edge Function `/functions/v1/api` | — | 404 | cloudflare | No (`NOT_FOUND`) |
-| **`sanmerida-com.alexruizrondon.workers.dev`** | Cloudflare | 200 | cloudflare | **SÍ** |
+> Esto costó una conclusión equivocada el 27/10/2026: se llegó a documentar que la
+> aplicación solo vivía en `workers.dev`, porque se dio por hecho que el dominio era
+> `sanmerida.com` (el proyecto, el repositorio y el Worker se llaman `sanmerida-com`, y
+> los documentos lo decían). **Lección: no deducir el dominio del nombre del proyecto;
+> preguntarlo o comprobarlo.**
 
-Conclusiones que importan:
+Estado comprobado:
 
-1. **`sanmerida.com` no es este proyecto.** Lo sirve un nginx sobre AWS y su `www` es un
-   CNAME a `sites.apts247.info` (una plataforma de apartamentos, sin relación). El DNS
-   vive en **AWS Route 53** (`ns-1521.awsdns-62.org` y compañía), **no** en Cloudflare.
-2. **El proyecto nunca ha estado en un dominio propio.** El único sitio donde se sirve la
-   aplicación es la URL del Worker.
-3. Por tanto, **el runbook del WAF y de Access (9.8) no se puede aplicar todavía**: no hay
-   un dominio sobre el que ponerlos.
+| Punto | Valor |
+|---|---|
+| Zona DNS | **Cloudflare** (`lewis.ns.cloudflare.com`, `amy.ns.cloudflare.com`) |
+| Apex | `188.114.96.3`, `188.114.97.3` (anycast de Cloudflare) |
+| Respuesta | `200`, `Server: cloudflare`, `x-opennext: 1` |
+| Cabeceras | Las 9 presentes (HSTS, CSP con `report-uri /api/csp-report`, …) |
+| Prueba de intrusión | **19/19** casos automáticos OK |
+| `www.sanmeridajz.com` | **NO EXISTE** (sin registro A ni CNAME) |
 
-**Cómo se identifica la app en 5 segundos.** Su cabecera CSP lleva
-`report-uri /api/csp-report`, que es única de este proyecto:
+Y estos **no** son de este proyecto, para no volver a confundirse:
+
+| Objetivo | Qué es |
+|---|---|
+| `sanmerida.com` | nginx sobre AWS (`50.112.96.208`), DNS en Route 53 |
+| `www.sanmerida.com` | nginx sobre AWS, CNAME a `sites.apts247.info` (alquileres) |
+| `sanmerida-com.pages.dev` | no responde (no hay proyecto Pages) |
+| Supabase Edge Function | 404 `NOT_FOUND` (los scripts `supabase:functions:*` son restos) |
+
+**Cómo identificar la app en 5 segundos.** Dos cabeceras únicas de este proyecto:
 
 ```powershell
-curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "server|report-uri"
+curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "x-opennext|report-uri|server"
 ```
 
-Si aparece `report-uri /api/csp-report`, es este Worker. Si aparece `Server: nginx` o no
-aparece la CSP, es otro sitio.
+`x-opennext: 1` **y** `report-uri /api/csp-report` = es este Worker. Si sale
+`Server: nginx`, es otro sitio.
 
-**Para poner un dominio propio** (requisito previo de 9.8):
+**Pendiente: falta `www`.** `www.sanmeridajz.com` no resuelve, así que quien escriba `www.`
+delante no llega a ninguna parte. Arreglo, en la zona de Cloudflare:
 
-1. La zona DNS del dominio tiene que estar en **esta** cuenta de Cloudflare: los
-   nameservers del dominio deben ser los de Cloudflare. `sanmerida.com` **no** lo está.
-2. *Workers & Pages* → `sanmerida-com` → *Settings* → *Domains & Routes* → *Add* →
-   *Custom Domain*.
-3. Comprobar con el comando de arriba que responde `report-uri /api/csp-report`.
+1. *DNS* → *Add record* → `A` con nombre `www`, contenido igual al apex, **Proxy activado**.
+   (O un `CNAME` de `www` al apex.)
+2. *Rules* → *Redirect Rules* → redirigir `www.sanmeridajz.com/*` a
+   `https://sanmeridajz.com/$1` con **301**. Conviene elegir uno de los dos sentidos y
+   aplicarlo siempre: tener las dos versiones servidas sin redirección parte el
+   posicionamiento y duplica la caché.
+3. Comprobar: `curl.exe -s -o NUL -w "%{http_code}" https://www.sanmeridajz.com/` debe dar
+   `200` o `301`, no un error de DNS.
 
-> Mientras no haya dominio propio, la app está accesible en la URL de `workers.dev`, que
-> **no admite WAF ni Access** en el plan gratuito. Ahí está el valor de ponerle dominio.
+Con la zona ya en Cloudflare y el dominio sirviendo el Worker, **el runbook del WAF y de
+Access (9.8) sí es aplicable**: solo hay que sustituir `TU-DOMINIO` por `sanmeridajz.com`.
+
 
 
 ### 9.11 Prueba de intrusión automatizada
@@ -679,8 +685,8 @@ internet): cabeceras, rutas protegidas sin sesión, tokens firmados con otro sec
 política de contraseñas, consentimiento y el colector de CSP.
 
 ```powershell
-npm run test:intrusion                                    # el Worker desplegado
-node scripts/prueba-intrusion.mjs https://tu-dominio.com   # un dominio concreto
+npm run test:intrusion                                     # produccion (sanmeridajz.com)
+node scripts/prueba-intrusion.mjs https://otro-dominio.com  # otro dominio
 ```
 
 No escribe nada: todos los POST usan datos que deben rechazarse **antes** de tocar la base

@@ -7,20 +7,22 @@
  * listados como MANUAL al final: se hacen a mano con una cuenta de prueba.
  *
  * Uso:
- *   node scripts/prueba-intrusion.mjs                          (el Worker desplegado)
- *   node scripts/prueba-intrusion.mjs https://midominio.com     (un dominio concreto)
+ *   node scripts/prueba-intrusion.mjs                          (produccion)
+ *   node scripts/prueba-intrusion.mjs https://otro-dominio.com  (otro entorno)
  *   node scripts/prueba-intrusion.mjs http://localhost:3000     (local)
  *
  * OJO con el dominio: hay que pasar el que de verdad sirve la aplicacion. Si se
  * apunta a un dominio que no es el proyecto, todo responde 404 y la prueba no dice
- * nada (ver `docs/OPERACIONES_PRODUCCION.md` 9.11).
+ * nada. Comprobacion rapida (ver `docs/OPERACIONES_PRODUCCION.md` 9.10):
+ * `curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "x-opennext|report-uri"`
+ * — la app responde `x-opennext: 1` y `report-uri /api/csp-report`.
  *
  * No escribe nada: todos los POST usan datos que deben ser rechazados **antes** de
  * tocar la base de datos (contraseñas débiles, sin consentimiento, sin sesión).
  */
 import { SignJWT } from "jose";
 
-const BASE = (process.argv[2] ?? "https://sanmerida-com.alexruizrondon.workers.dev").replace(/\/+$/, "");
+const BASE = (process.argv[2] ?? "https://sanmeridajz.com").replace(/\/+$/, "");
 
 const COOKIE_SESION = "san_team_session";
 const COOKIE_LICENCIA = "san_admin_access";
