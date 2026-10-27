@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { createClient } from "@supabase/supabase-js";
 import { BACKUP_PASSPHRASE_ENV, encryptBackup } from "../src/lib/backup-crypto.mjs";
+import { dbSslFor } from "../src/lib/db-ssl.mjs";
 
 loadEnv({ path: [".env.local", ".env"] });
 
@@ -112,9 +113,9 @@ let database = [];
 if (DATABASE_URL) {
   const db = new Client({
     connectionString: DATABASE_URL,
-    ssl: DATABASE_URL.includes("localhost") || DATABASE_URL.includes("127.0.0.1")
-      ? undefined
-      : { rejectUnauthorized: false },
+    // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`). Si el pooler
+    // de Supabase no valida, se define DATABASE_CA_CERT con la CA del proyecto.
+    ssl: dbSslFor(DATABASE_URL),
     connectionTimeoutMillis: 20000,
   });
 

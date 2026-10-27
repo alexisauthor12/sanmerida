@@ -11,6 +11,7 @@
  */
 import "dotenv/config";
 import { Client } from "pg";
+import { dbSslFor } from "../src/lib/db-ssl.mjs";
 
 const LOCAL_URL =
   process.env.LOCAL_DATABASE_URL ??
@@ -26,7 +27,8 @@ if (!REMOTE_URL) {
 const local = new Client({ connectionString: LOCAL_URL, connectionTimeoutMillis: 15000 });
 const remote = new Client({
   connectionString: REMOTE_URL,
-  ssl: { rejectUnauthorized: false },
+  // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`).
+  ssl: dbSslFor(REMOTE_URL),
   connectionTimeoutMillis: 20000,
 });
 

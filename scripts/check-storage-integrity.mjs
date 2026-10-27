@@ -16,6 +16,7 @@ import {
   buildDerivedTextKey,
   normalizeStorageKey,
 } from "../src/lib/asset-paths.mjs";
+import { dbSslFor } from "../src/lib/db-ssl.mjs";
 
 loadEnv({ path: [".env.local", ".env"] });
 
@@ -51,9 +52,8 @@ async function listRecursive(prefix = "") {
 
 const db = new Client({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes("localhost") || process.env.DATABASE_URL.includes("127.0.0.1")
-    ? undefined
-    : { rejectUnauthorized: false },
+  // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`).
+  ssl: dbSslFor(process.env.DATABASE_URL),
   connectionTimeoutMillis: 20000,
 });
 

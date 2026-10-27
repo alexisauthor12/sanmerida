@@ -58,9 +58,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const db = new Client({
   connectionString: DATABASE_URL,
-  ssl: DATABASE_URL.includes("localhost") || DATABASE_URL.includes("127.0.0.1")
-    ? undefined
-    : { rejectUnauthorized: false },
+  // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`).
+  ssl: dbSslFor(DATABASE_URL),
   connectionTimeoutMillis: 20000,
 });
 

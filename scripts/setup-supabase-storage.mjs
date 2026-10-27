@@ -82,9 +82,8 @@ async function ensureWithApi() {
 async function ensureWithSql() {
   const client = new Client({
     connectionString: DATABASE_URL,
-    ssl: DATABASE_URL.includes("localhost") || DATABASE_URL.includes("127.0.0.1")
-      ? undefined
-      : { rejectUnauthorized: false },
+    // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`).
+    ssl: dbSslFor(DATABASE_URL),
     connectionTimeoutMillis: 15000,
   });
 

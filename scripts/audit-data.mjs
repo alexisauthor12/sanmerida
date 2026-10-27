@@ -11,15 +11,16 @@
 import "dotenv/config";
 import { existsSync, readdirSync } from "node:fs";
 import { Client } from "pg";
+import { dbSslFor } from "../src/lib/db-ssl.mjs";
 
 const LOCAL_URL = process.env.LOCAL_DATABASE_URL ?? "postgresql://postgres:localdev@127.0.0.1:5432/sanmerida";
 const REMOTE_URL = process.env.DATABASE_URL;
 
 function makeClient(url) {
-  const isLocal = /127\.0\.0\.1|localhost/.test(url);
   return new Client({
     connectionString: url,
-    ssl: isLocal ? undefined : { rejectUnauthorized: false },
+    // Hallazgo F: se valida el certificado (ver `src/lib/db-ssl.mjs`).
+    ssl: dbSslFor(url),
     connectionTimeoutMillis: 20000,
   });
 }
