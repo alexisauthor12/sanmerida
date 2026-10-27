@@ -35,18 +35,6 @@ type MonitorClient = {
   proximoVencimiento: string;
 };
 
-type MonitorInstallment = {
-  id: string;
-  clientId: string;
-  semana: number;
-  numero: number;
-  tipo: "Regular" | "Fuera de semana";
-  vence: string;
-  monto: number;
-  recargo: number;
-  estado: "Pendiente" | "Vencida" | "Por vencer" | "Pagada";
-};
-
 type MonitorContract = {
   id: string;
   tipo: string;
@@ -142,63 +130,10 @@ type RegisterPaymentPayload = {
   memberKey?: string;
 };
 
-type LocalPaymentRecord = {
-  id: string;
-  installmentNumber: number;
-  amount: number;
-  paymentDate: Date;
-  reference: string;
-  bank: string;
-  method: string;
-  note: string;
-  createdAt: Date;
-};
-
-type LocalAdvanceRecord = {
-  id: string;
-  amount: number;
-  paymentDate: Date;
-  reference: string;
-  bank: string;
-  method: string;
-  note: string;
-  createdAt: Date;
-};
-
-const localMonitorStore = new Map<string, {
-  startDate: Date;
-  installmentPayments: LocalPaymentRecord[];
-  advancePayments: LocalAdvanceRecord[];
-}>();
-
 const FALLBACK_IMAGE = "/Documentos/Identificacion principal.jpeg";
 
 function sanitizeCedula(value: string) {
   return value.replace(/\D/g, "");
-}
-
-function parseDmy(value: string) {
-  const [day, month, year] = value.split("/").map(Number);
-  return new Date(year || 1970, (month || 1) - 1, day || 1);
-}
-
-function getLocalStoreByCedula(cedula: string) {
-  const key = sanitizeCedula(cedula);
-  if (!key) return null;
-
-  const existing = localMonitorStore.get(key);
-  if (existing) return existing;
-
-  const startDate = new Date();
-
-  const seeded = {
-    startDate,
-    installmentPayments: [] as LocalPaymentRecord[],
-    advancePayments: [] as LocalAdvanceRecord[],
-  };
-
-  localMonitorStore.set(key, seeded);
-  return seeded;
 }
 
 function getInstallmentNumberFromAdvanceMeta(note: string, reference: string) {
@@ -619,10 +554,10 @@ export async function GET(request: Request) {
       take: 100,
     });
 
-    const mapped = await Promise.all(profiles.map((profile: any) => mapProfile(profile)));
-    const mappedClients = mapped.map((item: any) => item.client);
-    const mappedProfiles = Object.fromEntries(mapped.map((item: any) => [item.client.id, item.profile]));
-    const mappedInstallments = mapped.flatMap((item: any) => item.installments);
+    const mapped = await Promise.all(profiles.map((profile) => mapProfile(profile)));
+    const mappedClients = mapped.map((item) => item.client);
+    const mappedProfiles = Object.fromEntries(mapped.map((item) => [item.client.id, item.profile]));
+    const mappedInstallments = mapped.flatMap((item) => item.installments);
 
     return NextResponse.json({
       ok: true,
@@ -780,15 +715,15 @@ export async function POST(request: Request) {
         intervalDays: resolveIntervalDays(profile.planName, cuotasTotales),
         paidAmountByNumber,
       });
-      const targetInstallment = installments.find((item: any) => item.numero === installmentNumberForAdvance);
+      const targetInstallment = installments.find((item) => item.numero === installmentNumberForAdvance);
       if (!targetInstallment) {
         return NextResponse.json({ ok: false, message: "No existe esa cuota objetivo para el abono." }, { status: 400 });
       }
 
       const totalAbonadoCuota = normalizeMoney(
         profile.advancePayments
-          .filter((item: any) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumberForAdvance)
-          .reduce((acc: any, item: any) => acc + item.amount, 0)
+          .filter((item) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumberForAdvance)
+          .reduce<number>((acc, item) => acc + item.amount, 0)
       );
       const installmentTotal = normalizeMoney(targetInstallment.monto + targetInstallment.recargo);
       const maxAdvance = calculateAdvanceMaxAmount({ installmentTotal, alreadyAdvanced: totalAbonadoCuota });
@@ -820,7 +755,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, message: "Indica el número de cuota a registrar." }, { status: 400 });
       }
 
-      const existingInstallmentPayment = profile.installmentPayments.find((item: any) => item.installmentNumber === installmentNumber);
+      const existingInstallmentPayment = profile.installmentPayments.find((item) => item.installmentNumber === installmentNumber);
       if (existingInstallmentPayment) {
         return NextResponse.json({ ok: false, message: `La cuota #${installmentNumber} ya tiene pago completo registrado.` }, { status: 400 });
       }
@@ -837,15 +772,15 @@ export async function POST(request: Request) {
         intervalDays: resolveIntervalDays(profile.planName, cuotasTotales),
         paidAmountByNumber,
       });
-      const targetInstallment = installments.find((item: any) => item.numero === installmentNumber);
+      const targetInstallment = installments.find((item) => item.numero === installmentNumber);
       if (!targetInstallment) {
         return NextResponse.json({ ok: false, message: "No existe esa cuota en el plan." }, { status: 400 });
       }
 
       const totalAbonadoCuota = normalizeMoney(
         profile.advancePayments
-          .filter((item: any) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumber)
-          .reduce((acc: any, item: any) => acc + item.amount, 0)
+          .filter((item) => getInstallmentNumberFromAdvanceMeta(item.note || "", item.reference || "") === installmentNumber)
+          .reduce<number>((acc, item) => acc + item.amount, 0)
       );
       const montoCuota = normalizeMoney(targetInstallment.monto + targetInstallment.recargo);
       const restanteCuota = Math.max(0, normalizeMoney(montoCuota - totalAbonadoCuota));
@@ -908,7 +843,7 @@ export async function DELETE(request: Request) {
         return NextResponse.json({ ok: false, message: "No existe expediente para esa cédula." }, { status: 404 });
       }
 
-      const paymentRecord = profile.installmentPayments.find((item: any) => item.installmentNumber === installmentNumber);
+      const paymentRecord = profile.installmentPayments.find((item) => item.installmentNumber === installmentNumber);
       if (!paymentRecord) {
         return NextResponse.json({ ok: false, message: `La cuota #${installmentNumber} no tiene un pago registrado para revertir.` }, { status: 404 });
       }

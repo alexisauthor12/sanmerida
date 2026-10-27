@@ -252,7 +252,7 @@ export async function POST(request: Request) {
     }
 
     const normal = profile.assets.find(
-      (asset: any) => asset.assetType === assetType && asset.documentKey === documentKey && asset.variant === "NORMAL",
+      (asset) => asset.assetType === assetType && asset.documentKey === documentKey && asset.variant === "NORMAL",
     );
 
     if (!normal) {
@@ -263,7 +263,7 @@ export async function POST(request: Request) {
     const normalExt = path.extname(normal.fileName || normal.filePath).toLowerCase();
     const scannedExt = isImageFile(normal.fileName || normal.filePath, normal.mimeType) ? ".jpg" : normalExt || ".bin";
 
-    let finalFilePath = buildAssetKey({
+    const finalFilePath = buildAssetKey({
       cedula,
       assetType,
       documentKey,

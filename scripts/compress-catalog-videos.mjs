@@ -27,7 +27,6 @@ const publicDir = path.resolve(__dirname, "..", "public");
 const discardDir = path.resolve(__dirname, "..", "storage-videos", "descarte");
 
 const MAX_BYTES = 24 * 1024 * 1024;
-const TARGET_HEIGHT = 1280;
 
 /** Planes de compresion: se prueban en orden hasta bajar de MAX_BYTES. */
 const LADDER = [

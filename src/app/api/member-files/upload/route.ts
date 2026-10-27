@@ -25,8 +25,8 @@ type AssetVariant = "NORMAL" | "SCANNED";
 type SharpFactory = typeof import("sharp");
 
 async function loadSharp(): Promise<SharpFactory> {
-  const module = await import("sharp");
-  return module.default;
+  const sharpModule = await import("sharp");
+  return sharpModule.default;
 }
 
 function sanitizeSegment(value: string) {

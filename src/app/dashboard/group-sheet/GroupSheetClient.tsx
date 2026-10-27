@@ -4,13 +4,6 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-type AdminUser = {
-  userId?: string;
-  email: string;
-  nombre: string;
-  isMember: boolean;
-};
-
 type CuotaMonitorClient = {
   id: string;
   nombre: string;

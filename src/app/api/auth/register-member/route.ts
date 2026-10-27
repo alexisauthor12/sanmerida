@@ -241,7 +241,7 @@ export async function POST(request: Request) {
 
   const missing = requiredAssets.filter((requiredAsset) => {
     return !profile.assets.some(
-      (asset: any) =>
+      (asset) =>
         asset.assetType === requiredAsset.assetType &&
         asset.documentKey === requiredAsset.documentKey &&
         asset.variant === requiredAsset.variant,

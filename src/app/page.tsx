@@ -51,10 +51,16 @@ function CatalogVideoCard({
   }, []);
 
   useEffect(() => {
-    if (sectionActive && isInView) {
-      setShouldLoad(true);
-    }
-  }, [sectionActive, isInView]);
+    if (!sectionActive || !isInView || shouldLoad) return;
+
+    // El video se carga la primera vez que su seccion esta activa y entra en
+    // pantalla, y queda cargado. La actualizacion se difiere al siguiente frame
+    // para no llamar a setState dentro del cuerpo del efecto (evita renders en
+    // cascada).
+    const frame = requestAnimationFrame(() => setShouldLoad(true));
+
+    return () => cancelAnimationFrame(frame);
+  }, [sectionActive, isInView, shouldLoad]);
 
   useEffect(() => {
     const element = videoRef.current;

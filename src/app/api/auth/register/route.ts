@@ -26,7 +26,9 @@ function getDatabaseUrl(): string {
   // Cloudflare Worker / Hyperdrive
   try {
     const { env } = getCloudflareContext();
-    const hyperdrive = (env as any)?.HYPERDRIVE;
+    const hyperdrive = (env as typeof env & {
+      HYPERDRIVE?: { connectionString?: string };
+    }).HYPERDRIVE;
 
     if (hyperdrive?.connectionString) {
       return clean(hyperdrive.connectionString);
