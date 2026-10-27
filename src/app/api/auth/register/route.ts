@@ -1,9 +1,8 @@
 import bcrypt from "bcryptjs";
-import { randomUUID } from "crypto";
-import { Client } from "pg";
 import { NextResponse } from "next/server";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { AUTH_COOKIE_NAME, createSessionToken } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
 type RegisterPayload = {
   nombre?: string;
@@ -17,37 +16,6 @@ type RegisterPayload = {
 
 const isValidEmail = (value: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-
-function clean(value?: string) {
-  return value?.trim().replace(/^['"]|['"]$/g, "") ?? "";
-}
-
-function getDatabaseUrl(): string {
-  // Cloudflare Worker / Hyperdrive
-  try {
-    const { env } = getCloudflareContext();
-    const hyperdrive = (env as typeof env & {
-      HYPERDRIVE?: { connectionString?: string };
-    }).HYPERDRIVE;
-
-    if (hyperdrive?.connectionString) {
-      return clean(hyperdrive.connectionString);
-    }
-  } catch {
-    // En Next.js local puede no existir el contexto de Cloudflare.
-  }
-
-  // Desarrollo local
-  const localUrl = clean(process.env.DATABASE_URL);
-
-  if (localUrl) {
-    return localUrl;
-  }
-
-  throw new Error(
-    "No existe una conexión PostgreSQL disponible. Falta HYPERDRIVE o DATABASE_URL.",
-  );
-}
 
 export async function POST(request: Request) {
   const body = (await request.json()) as RegisterPayload;
@@ -107,44 +75,20 @@ export async function POST(request: Request) {
     );
   }
 
-  let client: Client | null = null;
+  // Registro publico: limite por IP para frenar la creacion masiva de cuentas.
+  const limite = await checkRateLimit("register", { request });
+
+  if (!limite.allowed) {
+    return tooManyRequests(limite.retryAfterSeconds);
+  }
 
   try {
-    const connectionString = getDatabaseUrl();
-
-    console.log(
-      "[REGISTER] Conectando a PostgreSQL mediante",
-      connectionString.includes("pooler.supabase.com")
-        ? "Supabase/Hyperdrive"
-        : "DATABASE_URL",
-    );
-
-    const isLocalDatabase =
-      /(localhost|127\.0\.0\.1)/.test(
-        connectionString,
-      );
-
-    client = new Client({
-      connectionString,
-      ...(isLocalDatabase
-        ? {}
-        : {
-            ssl: {
-              rejectUnauthorized: false,
-            },
-          }),
+    const existente = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
     });
 
-    await client.connect();
-
-    console.log("[REGISTER] PostgreSQL conectado correctamente.");
-
-    const exists = await client.query<{ id: string }>(
-      'SELECT "id" FROM "User" WHERE "email" = $1 LIMIT 1',
-      [email],
-    );
-
-    if (exists.rows[0]) {
+    if (existente) {
       return NextResponse.json(
         {
           ok: false,
@@ -155,58 +99,37 @@ export async function POST(request: Request) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const createdAt = new Date();
-    const createdId = randomUUID();
 
-    const created = await client.query<{
-      id: string;
-      email: string;
-      nombre: string;
-      role: string;
-      tokenVersion: number;
-    }>(
-      `INSERT INTO "User"
-        ("id", "nombre", "apellido", "email", "telefono",
-         "passwordHash", "role", "isMember", "createdAt", "updatedAt")
-       VALUES
-        ($1, $2, $3, $4, $5, $6, $7::"UserRole", $8, $9, $10)
-       RETURNING "id", "email", "nombre", "role", "tokenVersion"`,
-      [
-        createdId,
+    // El registro publico nace como PROSPECT: accede al dashboard de catalogo,
+    // feed y novedades, y NO tiene ningun permiso sobre expedientes, documentos
+    // ni cuotas de terceros (ver docs/SEGURIDAD_INTEGRAL.md 13.1).
+    const creado = await prisma.user.create({
+      data: {
         nombre,
         apellido,
         email,
         telefono,
         passwordHash,
-        // El registro publico es un PROSPECT: accede al dashboard de catalogo,
-        // feed y novedades, pero NUNCA a expedientes, documentos ni cuotas de
-        // terceros (ver docs/SEGURIDAD_INTEGRAL.md 13.1).
-        "PROSPECT",
-        false,
-        createdAt,
-        createdAt,
-      ],
-    );
-
-    const row = created.rows[0];
-
-    if (!row) {
-      throw new Error("PostgreSQL no devolvió el usuario creado.");
-    }
+        role: "PROSPECT",
+        isMember: false,
+        passwordChangedAt: new Date(),
+      },
+      select: { id: true, email: true, nombre: true, role: true, tokenVersion: true },
+    });
 
     const response = NextResponse.json({
       ok: true,
       message: "Registro completado. Ya puedes explorar el catálogo y las novedades.",
-      role: "PROSPECT",
+      role: creado.role,
     });
 
     if (!skipSession) {
       const token = await createSessionToken({
-        sub: row.id,
-        email: row.email,
-        nombre: row.nombre,
+        sub: creado.id,
+        email: creado.email,
+        nombre: creado.nombre,
         role: "PROSPECT",
-        tokenVersion: row.tokenVersion,
+        tokenVersion: creado.tokenVersion,
       });
 
       response.cookies.set({
@@ -232,13 +155,5 @@ export async function POST(request: Request) {
       },
       { status: 500 },
     );
-  } finally {
-    if (client) {
-      try {
-        await client.end();
-      } catch {
-        // Ignorar error de cierre.
-      }
-    }
   }
 }
