@@ -24,7 +24,7 @@ estado objetivo y el cambio concreto por archivo.
 10. Datos personales y cumplimiento
 11. Verificacion automatizada
 12. Plan de implementacion por fases
-13. Decisiones abiertas (requieren aprobacion)
+13. Decisiones de negocio (cerradas)
 
 ---
 
@@ -58,8 +58,8 @@ Principios de diseno:
 
 | # | Riesgo | Severidad |
 |---|---|---|
-| A | `POST /api/auth/register` no exige sesion ni licencia: cualquiera crea una cuenta de equipo | Critica |
-| B | `POST/GET /api/member-files/*` no exige licencia: cualquier cuenta de equipo lee/descarga/modifica/borra expedientes y documentos de **cualquier** cedula | Critica |
+| A | `POST /api/auth/register` es publico y la cuenta resultante tiene los **mismos privilegios que una cuenta de equipo**: no existe distincion entre prospecto y personal | Critica |
+| B | `POST/GET /api/member-files/*` no exige licencia ni rol: **cualquier** cuenta autenticada (incluida una creada desde `/register`) lee, descarga, modifica y borra expedientes y documentos de **cualquier** cedula | Critica |
 | C | `lib/auth.ts` cae a un secreto de desarrollo si `NODE_ENV !== "production"`: permite forjar tokens de administrador | Critica |
 | D | `POST /api/auth/admin-direct-login` autentica solo con licencia (sin sesion previa), crea la cuenta admin si no existe y devuelve el error crudo de la base de datos | Alta |
 | E | No existe rate limiting ni bloqueo por intentos en ningun endpoint de login | Alta |
@@ -77,22 +77,52 @@ Principios de diseno:
 
 | Actor | Descripcion | Acceso esperado |
 |---|---|---|
-| **MEMBER** | Cliente con expediente. Entra por `/member-login` con `@usuario` + clave `SAN-MEMBER-XXXXXX` | Solo **su** expediente, sus cuotas, sus documentos y el feed publicado |
-| **OPERATOR** | Personal de operacion (gestor de grupos, atencion). Cuenta de equipo **sin** licencia | Expedientes, documentos y cuotas de **todos** los miembros; **no** ve credenciales, **no** borra |
-| **ADMIN** | Responsable del sistema. Requiere licencia administrativa validada | Todo, incluidas credenciales, borrado, financiamiento y auditoria |
+| **PROSPECT** | Persona que quiere conocer la empresa. Se registra solo en `/register` (registro inicial publico). **No** es miembro oficial | Dashboard de **catalogo, feed, sistemas y novedades**. Financiamiento (precios publicos). **Cero** acceso a expedientes, cuotas o documentos de terceros |
+| **MEMBER** | Miembro oficial con expediente creado por el equipo. Entra por `/member-login` con `@usuario` + clave `SAN-MEMBER-XXXXXX` | Solo **su** expediente, sus cuotas, sus documentos, sus contratos y el feed publicado |
+| **ADMIN** | Unico rol con poder. Personal autorizado de SAN Merida | Todo, incluidas credenciales (en claro, para enviarlas al miembro), borrado, financiamiento y auditoria |
 | **SYSTEM** | Scripts y tareas programadas (seed, backups, purga) | Acceso por credenciales de proceso, nunca por sesion web |
 
-Regla de negocio clave: **la licencia administrativa deja de ser el criterio de
-acceso a los datos**. Pasa a ser un mecanismo de **step-up**: confirma una
-accion critica dentro de una sesion ya autenticada (ver 5.4). El criterio de
-acceso pasa a ser el **rol**.
+> **No existe un rol OPERATOR.** Cualquier cuenta de equipo es ADMIN. Esto
+> reduce la superficie: no hay un nivel intermedio que pueda ver expedientes sin
+> la licencia validada.
+
+Dos reglas de negocio que definen el diseno:
+
+1. **El registro publico no da poder.** Un PROSPECT nunca puede leer ni escribir
+   datos de un expediente. Es la correccion de fondo del hallazgo critico: el
+   problema no era que `/register` fuera publico, sino que la cuenta resultante
+   tuviera acceso a los documentos de todos.
+2. **La licencia administrativa deja de ser el criterio de acceso a los datos.**
+   Pasa a ser un mecanismo de **step-up**: confirma una accion critica dentro de
+   una sesion ya autenticada como ADMIN (ver 5.4). El criterio de acceso es el
+   **rol**; la licencia es la confirmacion adicional.
+
+### 2.0 Flujo de vida de una cuenta
+
+```
+/register (publico)
+   -> PROSPECT  -> dashboard de catalogo / feed / novedades
+                     |
+                     | el equipo crea el expediente en /register-member
+                     v
+                  MEMBER    -> panel propio: cuotas, modelo, documentos, contratos
+
+/login + licencia (step-up)
+   -> ADMIN     -> panel admin: expedientes, cuotas, documentos, novedades, auditoria
+```
+
+Al crear el expediente, si el correo ya corresponde a una cuenta PROSPECT, esa
+misma cuenta se **vincula y promueve a MEMBER** (no se crea una cuenta nueva):
+asi el prospecto conserva el acceso y pasa a ver sus cuotas. Si el correo es
+nuevo, se crea la cuenta MEMBER con sus credenciales.
+
 
 ### 2.2 Modelo de datos (objetivo)
 
 ```prisma
 enum UserRole {
+  PROSPECT
   MEMBER
-  OPERATOR
   ADMIN
 }
 
@@ -105,7 +135,8 @@ model User {
   passwordHash      String
 
   // Rol efectivo del sistema (sustituye a isMember como fuente de verdad).
-  role              UserRole  @default(OPERATOR)
+  // PROSPECT = registro inicial publico, sin acceso a datos de expedientes.
+  role              UserRole  @default(PROSPECT)
 
   // Compatibilidad temporal con el codigo actual. Se mantiene sincronizado
   // con role durante la Fase 1 y se elimina en la Fase 2.
@@ -137,17 +168,17 @@ model User {
 
 `prisma migrate` con script de backfill, en este orden:
 
-1. Agregar la columna `role` con `@default(OPERATOR)` (no rompe nada).
+1. Agregar la columna `role` con `@default(PROSPECT)` (no rompe nada).
 2. Backfill:
-   - `UPDATE "User" SET "role" = 'MEMBER'   WHERE "isMember" = true;`
-   - `UPDATE "User" SET "role" = 'ADMIN'    WHERE "email" = $ADMIN_ACCOUNT_EMAIL;`
-   - el resto queda `OPERATOR`.
+   - `UPDATE "User" SET "role" = 'MEMBER' WHERE "isMember" = true;`
+   - `UPDATE "User" SET "role" = 'ADMIN'  WHERE "isMember" = false;`
+   - (hoy no hay PROSPECT: las cuentas existentes o son miembros o son del equipo)
 3. Agregar `tokenVersion = 1`, contadores en 0 y `passwordChangedAt = "updatedAt"`.
 4. El codigo nuevo lee **`role`**; `isMember` se sigue escribiendo por
    compatibilidad hasta la Fase 2.
 
-> Nota: la asignacion de `ADMIN` por email es un paso **manual y auditado**. Se
-> documenta en el runbook (`docs/OPERACIONES_PRODUCCION.md`).
+> Cualquier cuenta nueva creada por `/register` nace como **PROSPECT**. Las
+> cuentas de equipo (ADMIN) solo se crean desde el panel con `usuario:manage`.
 
 ---
 
@@ -160,7 +191,7 @@ type SessionPayload = {
   sub: string;        // User.id
   email: string;
   nombre: string;
-  role: "MEMBER" | "OPERATOR" | "ADMIN";
+  role: "PROSPECT" | "MEMBER" | "ADMIN";
   tv: number;         // tokenVersion: revocacion
 };
 ```
@@ -220,41 +251,46 @@ auditoria:read             usuario:manage
 
 ### 4.2 Matriz rol x permiso
 
-| Permiso | MEMBER | OPERATOR | ADMIN |
+| Permiso | PROSPECT | MEMBER | ADMIN |
 |---|:--:|:--:|:--:|
-| `expediente:read:own` | si | — | — |
-| `expediente:read:any` | no | si | si |
-| `expediente:create` | no | si | si |
-| `expediente:update` | no | si | si |
-| `expediente:delete` | no | **no** | si |
-| `documento:read:own` | si | — | — |
-| `documento:read:any` | no | si | si |
-| `documento:upload` | no | si | si |
-| `documento:scan` | no | si | si |
-| `documento:delete` | no | **no** | si |
-| `cuota:read:own` | si | — | — |
-| `cuota:read:any` | no | si | si |
-| `cuota:payment:register` | no | si | si |
-| `cuota:payment:revert` | no | **no** | si |
-| `credencial:read` | no | **no** | si |
-| `credencial:rotate` | no | **no** | si |
+| `expediente:read:own` | no | si | — |
+| `expediente:read:any` | **no** | no | si |
+| `expediente:create` | **no** | no | si |
+| `expediente:update` | **no** | no | si |
+| `expediente:delete` | **no** | no | si (step-up) |
+| `documento:read:own` | no | si | — |
+| `documento:read:any` | **no** | **no** | si |
+| `documento:upload` | **no** | no | si |
+| `documento:scan` | **no** | no | si |
+| `documento:delete` | **no** | no | si (step-up) |
+| `cuota:read:own` | no | si | — |
+| `cuota:read:any` | **no** | **no** | si |
+| `cuota:payment:register` | **no** | no | si |
+| `cuota:payment:revert` | **no** | no | si (step-up) |
+| `credencial:read` | **no** | no | si (step-up) |
+| `credencial:rotate` | **no** | no | si (step-up) |
 | `financiamiento:read` | si | si | si |
-| `financiamiento:write` | no | no | si |
+| `financiamiento:write` | **no** | no | si (step-up) |
 | `novedad:read:published` | si | si | si |
-| `novedad:read:any` (borradores) | no | si | si |
-| `novedad:write` | no | si | si |
-| `grupo:read` | no | si | si |
-| `grupo:export` | no | si | si |
-| `auditoria:read` | no | **no** | si |
-| `usuario:manage` | no | no | si |
+| `novedad:read:any` (borradores) | **no** | **no** | si |
+| `novedad:write` | **no** | no | si |
+| `grupo:read` | **no** | no | si |
+| `grupo:export` | **no** | no | si |
+| `auditoria:read` | **no** | no | si (step-up) |
+| `usuario:manage` | **no** | no | si (step-up) |
 
-**Decisiones de negocio reflejadas aqui** (confirmar en la seccion 13):
+**Lo que hace segura la matriz** (decisiones cerradas):
 
-- Un **OPERATOR** gestiona el dia a dia (expedientes, documentos, cuotas,
-  novedades) pero **no puede destruir informacion** (borrar expedientes,
-  documentos o revertir pagos) ni ver credenciales. Eso queda solo en ADMIN.
-- Un **MEMBER** nunca ve datos de otro miembro, ni siquiera por error de
-  implementacion: el filtro por `userId` forma parte del guard, no de la ruta.
+- Un **PROSPECT** solo ve lo publico: catalogo, financiamiento (precios), feed
+  publicado y novedades. **Ninguna** fila de expediente, documento, cuota, grupo,
+  auditoria o gestion de usuarios. El auto-registro deja de ser una via de fuga.
+- Un **MEMBER** nunca ve datos de otro miembro: solo los permisos `:own`, y el
+  filtro por `userId` lo aplica el guard, no la ruta.
+- **Todo lo que toca datos de terceros o destruye informacion es ADMIN**, y lo
+  critico exige ademas la licencia (step-up).
+- **No hay OPERATOR**: no existe un nivel intermedio capaz de leer expedientes sin
+  la licencia validada.
+
 
 ### 4.3 Regla del propietario
 
@@ -286,7 +322,7 @@ mensaje indica que se debe validar la licencia administrativa.
 ### 5.1 `src/lib/authz.ts` (nuevo) — fuente unica de verdad
 
 ```ts
-export const ROLES = ["MEMBER", "OPERATOR", "ADMIN"] as const;
+export const ROLES = ["PROSPECT", "MEMBER", "ADMIN"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
@@ -305,16 +341,11 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 /** Permisos por rol. ADMIN recibe el catalogo completo por construccion. */
 const MATRIX: Record<Role, readonly Permission[]> = {
+  // Registro inicial publico: solo lo que puede ver alguien de fuera.
+  PROSPECT: ["financiamiento:read", "novedad:read:published"],
   MEMBER: [
     "expediente:read:own", "documento:read:own", "cuota:read:own",
     "financiamiento:read", "novedad:read:published",
-  ],
-  OPERATOR: [
-    "expediente:read:any", "expediente:create", "expediente:update",
-    "documento:read:any", "documento:upload", "documento:scan",
-    "cuota:read:any", "cuota:payment:register",
-    "financiamiento:read", "novedad:read:published", "novedad:read:any",
-    "novedad:write", "grupo:read", "grupo:export",
   ],
   ADMIN: PERMISSIONS,
 };
@@ -659,7 +690,7 @@ Cambios concretos, en el orden de implementacion (Fase 0 primero).
 
 | Archivo | Cambio |
 |---|---|
-| `api/auth/register/route.ts` | **Exige `usuario:manage`** o se retira la ruta publica (decision 13.1); politica de contrasena; error generico; TLS validado |
+| `api/auth/register/route.ts` | La cuenta nace como **PROSPECT** (sin ningun permiso de expediente); politica de contrasena; rate limit; error generico; TLS validado |
 | `api/auth/login/route.ts` | Rate limit + bloqueo progresivo + auditoria; se elimina el fallback de credenciales de desarrollo |
 | `api/auth/admin-license/route.ts` | Rate limit; licencia ligada al `tokenVersion`; duracion 4 h; auditoria |
 | `api/auth/admin-direct-login/route.ts` | **Se elimina**: el flujo pasa a ser login + licencia sobre sesion ya iniciada |
@@ -693,7 +724,7 @@ Cambios concretos, en el orden de implementacion (Fase 0 primero).
 | `wrangler.jsonc` | Binding `RATE_LIMIT` (KV) y `AUDIT_RETENTION_DAYS` |
 | `next.config.ts` | Cabeceras de seguridad globales (seccion 9.1) |
 | `prisma/schema.prisma` | `UserRole`, campos nuevos de `User`, modelo `AuditLog` y enum `AuditAction` |
-| `src/app/register/page.tsx` | Se retira o se protege segun la decision 13.1 |
+| `src/app/register/page.tsx` | Se mantiene **publico** (registro inicial de PROSPECT); se ajusta el texto para dejar claro que no es una membresia oficial |
 | `docs/OPERACIONES_PRODUCCION.md` | Nuevas variables de entorno y checklist de seguridad |
 
 ### 8.7 Compatibilidad durante la migracion
@@ -810,11 +841,13 @@ no un extra.
 - Para **cada** rol y **cada** permiso, verifica el resultado esperado de `can()`.
   La tabla del test es la transcripcion literal de la matriz de la seccion 4.2.
 - Verifica que `ADMIN` tenga el catalogo completo.
+- Verifica que `PROSPECT` **solo** tenga `financiamiento:read` y
+  `novedad:read:published`, y que **ningun** permiso suyo toque expedientes,
+  documentos, cuotas, grupos, auditoria o usuarios.
 - Verifica que `MEMBER` **no** tenga ninguno de los permisos `:any` ni de escritura.
-- Verifica que `OPERATOR` no tenga `expediente:delete`, `documento:delete`,
-  `credencial:read`, `cuota:payment:revert`, `usuario:manage` ni `auditoria:read`.
 - Verifica que todo permiso de `STEP_UP_PERMISSIONS` pertenezca al catalogo y que
-  **ningun** permiso de `MEMBER` lo requiera.
+  **ningun** permiso de `MEMBER` ni de `PROSPECT` lo requiera.
+- Verifica que no exista ningun rol con permisos fuera del catalogo.
 
 ### 11.2 `tests/api-guard-coverage.test.mjs` — la prueba mas importante
 
@@ -865,10 +898,12 @@ resultado esperado:
 | 7 | 6 intentos fallidos de login seguidos | `429` y cuenta bloqueada |
 | 8 | `member-files/profile` con cedula inexistente vs. existente | misma forma y tiempo de respuesta |
 | 9 | Errores de base de datos | sin detalle interno en la respuesta |
-| 10 | OPERATOR intenta borrar un documento | `403` |
-| 11 | OPERATOR intenta leer credenciales | `403` |
+| 10 | Cuenta PROSPECT intenta leer el expediente de un miembro | `403` |
+| 11 | Cuenta PROSPECT intenta descargar o borrar un documento | `403` |
 | 12 | `POST /api/auth/admin-direct-login` | `404` (ruta eliminada) |
 | 13 | Descarga masiva de documentos (mas de 120 en 5 min) | `429` |
+| 14 | ADMIN **sin** licencia valida intenta ver credenciales o borrar | `403` |
+| 15 | Cuenta PROSPECT consulta `/api/monitor-cuotas` | `403` |
 
 ---
 
@@ -885,7 +920,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 0.2 | `getAuthSecret()` fail-closed + `role`/`tv` en el token | `Seguridad: secreto de firma fail-closed` |
 | 0.3 | `lib/api-guard.ts` + `lib/audit.ts` + `tests/api-guard-coverage.test.mjs` | `Seguridad: guard unico de autorizacion y cobertura de rutas` |
 | 0.4 | `/api/member-files/*` y `/api/member-panel` pasan por el guard (**cierra la fuga critica**) | `Seguridad: cerrar acceso a expedientes y documentos` |
-| 0.5 | `/api/auth/register` protegido; `/register` retirado o restringido | `Seguridad: cerrar el auto-registro de cuentas de equipo` |
+| 0.5 | `/api/auth/register` crea **PROSPECT** (sin permisos de expediente) y el dashboard del prospecto queda limitado a catalogo, feed y novedades | `Seguridad: rol PROSPECT para el registro publico` |
 | 0.6 | `admin-direct-login` eliminado | `Seguridad: eliminar la ruta de login administrativo directo` |
 | 0.7 | `lib/rate-limit.ts` + limites en los endpoints de login | `Seguridad: rate limiting y bloqueo progresivo` |
 | 0.8 | TLS validado; errores genericos; sin PII en logs | `Seguridad: TLS validado y errores sin detalle interno` |
@@ -929,62 +964,88 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 
 ---
 
-## 13) Decisiones abiertas (necesito tu aprobacion)
+## 13) Decisiones de negocio (cerradas)
 
-Estas decisiones cambian el alcance del trabajo. Estan ordenadas por impacto.
+Estas decisiones las confirmo el responsable del sistema y **definen el diseno de
+las secciones 2 a 8**. No son opciones abiertas: son requisitos.
 
-### 13.1 Que hacemos con el auto-registro de cuentas de equipo
+### 13.1 El registro publico se mantiene, pero sin poder
 
-Hoy cualquiera se crea una cuenta de equipo desde `/register`, y esa cuenta es la
-puerta de entrada a los expedientes.
+`/register` **se mantiene abierto**: es el registro inicial de alguien que quiere
+conocer la empresa y entrar al dashboard de catalogo, feed, sistemas y novedades.
+**No** es una membresia oficial y **no** da ningun permiso sobre datos de terceros.
 
-- **Opcion A (recomendada):** se retira `/register` del sitio publico. Las cuentas
-  de equipo solo las crea un ADMIN desde el panel (permiso `usuario:manage`).
-- **Opcion B:** se mantiene la pagina, pero la cuenta nace **inactiva** y un ADMIN
-  la aprueba y le asigna el rol.
-- **Opcion C:** se mantiene abierta y solo se protege con rate limiting y
-  verificacion de correo.
+- La cuenta nace con rol **PROSPECT**.
+- El dashboard del PROSPECT se limita a catalogo, financiamiento publico, feed y
+  novedades (el panel de equipo ya convertido a datos reales; solo falta afinarlo).
+- Cuando el equipo crea el expediente en `/register-member`, esa misma cuenta se
+  vincula y se promueve a **MEMBER**.
+- Consecuencia tecnica: **no existe** una cuenta de equipo creada por
+  auto-registro. Las cuentas ADMIN solo se crean desde el panel (`usuario:manage`).
 
-### 13.2 Puede un OPERATOR borrar informacion
+### 13.2 No existe el rol OPERATOR
 
-Propongo que **no**: borrar expedientes, documentos o revertir pagos queda solo en
-ADMIN con step-up. Si en la operacion diaria necesitan borrar, se agrega un flujo de
-"solicitud de borrado" que un ADMIN aprueba (y queda auditado).
+**Solo ADMIN tiene poder.** Se elimina el nivel intermedio: cualquier cuenta de
+equipo es ADMIN y opera con licencia validada. Esto reduce la superficie de ataque:
+no hay ninguna cuenta capaz de leer expedientes sin licencia.
 
-### 13.3 Licencia administrativa: se mantiene o se sustituye
+### 13.3 La licencia administrativa se mantiene como step-up
 
-- **Opcion A (recomendada):** se mantiene como **step-up** para las acciones
-  criticas, se acorta a 4 h y se le agrega 2FA en la Fase 3.
-- **Opcion B:** se elimina la licencia y el control queda 100% en el rol + 2FA.
+Se mantiene y se implementa **en serio**:
 
-### 13.4 Clave de miembro: se sigue pudiendo leer en claro
+- Duracion **4 horas** (hoy 24 h).
+- Ligada al `tokenVersion` de la sesion: un logout global la invalida.
+- **Obligatoria** para: borrar expedientes o documentos, ver o rotar credenciales,
+  revertir pagos, cambiar el financiamiento, gestionar usuarios y consultar la
+  auditoria.
+- Rate limiting dedicado (3 intentos / 30 min) con bloqueo progresivo.
+- 2FA (TOTP) sobre la licencia en la Fase 3.
+- Se elimina `admin-direct-login`: el flujo unico es **login normal + licencia**.
 
-Hoy el ADMIN puede ver la clave `SAN-MEMBER-XXXXXX` del miembro (cifrado reversible).
-Es una decision de negocio: **facilita el soporte**, pero significa que la clave es
-recuperable por quien tenga `AUTH_SECRET` y el permiso.
+### 13.4 El ADMIN puede leer la clave del miembro en claro
 
-- **Opcion A (recomendada):** se mantiene, pero con `credencial:read` (solo ADMIN),
-  step-up, auditoria de cada lectura y rotacion facil.
-- **Opcion B:** se vuelve **irreversible** (solo bcrypt). Si el miembro pierde la
-  clave, se le emite una nueva. Mas seguro, menos comodo para soporte.
+**Se mantiene** el cifrado reversible (`AES-256-GCM`): el ADMIN necesita ver la
+clave `SAN-MEMBER-XXXXXX` para **enviarsela al miembro**. Condiciones que se
+implementan junto con esa capacidad:
+
+- Permiso `credencial:read` exclusivo de ADMIN, con **step-up** obligatorio.
+- **Cada lectura queda auditada** (`CREDENCIAL_READ`) con actor, expediente, IP y
+  fecha: si alguien consulta claves, queda registro.
+- Rotacion de clave disponible y auditada (`CREDENCIAL_ROTATE`).
+- La clave se muestra solo en el expediente, nunca en listados ni exportaciones.
+- En pantalla se enmascara por defecto (`SAN-MEMBER-••••AB`) y requiere una accion
+  explicita para revelarla.
+- El secreto de cifrado se separa de `AUTH_SECRET` (seccion 13.7) para que rotar la
+  firma de sesiones no rompa las credenciales ya emitidas.
 
 ### 13.5 Retencion
 
-- Auditoria de accesos: propongo **2 anos**.
-- Expedientes de miembros inactivos: hay que decidir con el negocio (se conservan
-  indefinidamente o se archivan a los N anos).
+- Auditoria de accesos: **2 anos** (configurable con `AUDIT_RETENTION_DAYS`).
+- Papelera de documentos: 30 dias (ya implementado).
+- Expedientes inactivos: politica pendiente de definir con el negocio; por ahora no
+  se borra nada automaticamente.
 
 ### 13.6 Alcance del rate limiting
 
-- **Opcion A (recomendada):** KV (rapido de implementar, suficiente).
-- **Opcion B:** Durable Object (consistencia fuerte, mas trabajo).
+**Cloudflare KV** (rapido de implementar, suficiente para contadores de ventana
+fija), con respaldo en memoria para desarrollo. Si mas adelante se necesita
+consistencia fuerte, se migra a Durable Object sin cambiar la interfaz.
 
-### 13.7 Separacion de secretos
+### 13.7 Separacion de secretos: autorizada
 
-Separar `AUTH_SECRET` de la clave de cifrado de miembros obliga a **re-cifrar** las
-claves existentes con un script que necesita el secreto anterior. Se puede hacer sin
-cortar el servicio, pero requiere ventana de mantenimiento y respaldo previo.
-¿Se autoriza?
+Se separa `AUTH_SECRET` (firma de sesiones) de
+`MEMBER_KEY_ENCRYPTION_SECRET` (cifrado de credenciales de miembros). Requiere:
+
+1. Respaldo previo de la base de datos.
+2. Definir el secreto nuevo en el entorno.
+3. Ejecutar `scripts/rotate-member-key-secret.mjs` (idempotente) con ambos secretos
+   disponibles.
+4. Verificar con `scripts/check-storage-integrity.mjs` y con una lectura de prueba.
+5. Ventana de mantenimiento acordada (no corta el servicio, pero conviene hacerlo
+   sin trafico).
+
+**Prioridad:** Fase 3. No bloquea la contencion, pero se documenta desde ya.
+
 
 ---
 
@@ -992,8 +1053,8 @@ cortar el servicio, pero requiere ventana de mantenimiento y respaldo previo.
 
 | Pregunta | Respuesta |
 |---|---|
-| ¿El sistema esta blindado hoy? | **No.** Hay una via directa de fuga de expedientes y documentos por parte de cualquiera que se registre. |
-| ¿Cual es el cambio mas urgente? | Cerrar `/api/member-files/*` con el guard por rol y cerrar el auto-registro de equipo (pasos 0.3 a 0.5). |
+| ¿El sistema esta blindado hoy? | **No.** Cualquier cuenta creada desde `/register` (publico) puede leer, descargar, modificar y borrar los expedientes y documentos de todos los miembros. |
+| ¿Cual es el cambio mas urgente? | Introducir el rol **PROSPECT** y hacer pasar `/api/member-files/*` y `/api/member-panel` por el guard por rol (pasos 0.1, 0.3 y 0.4). |
 | ¿Cuanto cuesta dejarlo defendible? | **Fase 0**: una sesion de trabajo. Con eso se cierra la exposicion critica. |
 | ¿Cuanto cuesta dejarlo "nivel empresa"? | **Fases 0 + 1**: roles, auditoria, revocacion de sesiones, cabeceras y panel de auditoria. |
 | ¿Que aporta mas valor a largo plazo? | La **auditoria** y la **prueba de cobertura de guard**: convierten la seguridad en algo verificable, no en buena voluntad. |
