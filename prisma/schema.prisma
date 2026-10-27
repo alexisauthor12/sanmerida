@@ -5,7 +5,12 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // `url`: conexion de la aplicacion (pooler de transacciones, puerto 6543).
   url      = env("DATABASE_URL")
+  // `directUrl`: SOLO para comandos de esquema (`db push` / `migrate`), que
+  // necesitan el pooler de SESION (puerto 5432): el de transacciones no soporta
+  // DDL y `prisma db push` se queda colgado con el.
+  directUrl = env("DIRECT_URL")
 }
 
 /// Rol efectivo de una cuenta. No existe un rol OPERATOR: todo el personal es

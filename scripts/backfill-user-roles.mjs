@@ -34,10 +34,14 @@ function host(connectionString) {
   }
 }
 
-const connectionString = clean(process.env.DATABASE_URL);
+// El backfill hace updateMany (Prisma las envuelve en transaccion): necesita el
+// pooler de SESION (DIRECT_URL, puerto 5432). El de transacciones (6543) da
+// "Unable to start a transaction in the given time".
+const connectionString = clean(process.env.DIRECT_URL) || clean(process.env.DATABASE_URL);
+const origenConexion = clean(process.env.DIRECT_URL) ? "DIRECT_URL (sesion)" : "DATABASE_URL";
 
 if (!connectionString) {
-  console.error("Falta DATABASE_URL. Define la conexion antes de ejecutar este script.");
+  console.error("Falta DIRECT_URL o DATABASE_URL. Define la conexion antes de ejecutar este script.");
   process.exit(1);
 }
 
@@ -46,7 +50,7 @@ const prisma = new PrismaClient({
 });
 
 try {
-  console.log(`Destino: ${host(connectionString)}`);
+  console.log(`Destino: ${host(connectionString)} (${origenConexion})`);
   console.log(apply ? "Modo: APLICAR\n" : "Modo: SIMULACION (usa --apply para escribir)\n");
 
   const total = await prisma.user.count();
@@ -64,18 +68,19 @@ try {
   console.log(`Pendientes de pasar a ADMIN:  ${pendientesEquipo}`);
 
   if (apply && (pendientesMiembro > 0 || pendientesEquipo > 0)) {
-    const aMiembro = await prisma.user.updateMany({
-      where: { isMember: true, role: { not: "MEMBER" } },
-      data: { role: "MEMBER" },
-    });
+    // SQL directo a proposito: `updateMany` de Prisma se envuelve en una
+    // transaccion y el pooler de Supabase la rechaza ("Unable to start a
+    // transaction in the given time"). Un UPDATE suelto no necesita transaccion.
+    const aMiembro = await prisma.$executeRawUnsafe(
+      `UPDATE "User" SET "role" = 'MEMBER' WHERE "isMember" = true AND "role" <> 'MEMBER'`,
+    );
 
-    const aAdmin = await prisma.user.updateMany({
-      where: { isMember: false, role: { not: "ADMIN" } },
-      data: { role: "ADMIN" },
-    });
+    const aAdmin = await prisma.$executeRawUnsafe(
+      `UPDATE "User" SET "role" = 'ADMIN' WHERE "isMember" = false AND "role" <> 'ADMIN'`,
+    );
 
-    console.log(`\nActualizadas a MEMBER: ${aMiembro.count}`);
-    console.log(`Actualizadas a ADMIN:  ${aAdmin.count}`);
+    console.log(`\nActualizadas a MEMBER: ${aMiembro}`);
+    console.log(`Actualizadas a ADMIN:  ${aAdmin}`);
   }
 
   if (apply) {
