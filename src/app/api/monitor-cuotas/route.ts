@@ -12,11 +12,13 @@ import {
   toDmy,
 } from "@/lib/installment-schedule.mjs";
 import {
-  decryptMemberKey,
-  encryptMemberKey,
   generateMemberKey,
   isMemberKey,
 } from "@/lib/member-credentials.mjs";
+import {
+  decryptMemberKeyWithEnv,
+  encryptMemberKeyWithEnv,
+} from "@/lib/member-key-secret.mjs";
 import { prisma } from "@/lib/prisma";
 
 type MonitorClient = {
@@ -258,7 +260,7 @@ async function mapProfile(
   const clientId = `mp-${profile.id}`;
   // La clave del miembro solo se descifra para consultas administrativas.
   const memberKey = options.includeCredentials
-    ? await decryptMemberKey(profile.memberKeyCipher, process.env.AUTH_SECRET ?? "")
+    ? await decryptMemberKeyWithEnv(profile.memberKeyCipher, process.env)
     : null;
   const fullName = `${profile.nombre ?? ""} ${profile.apellido ?? ""}`.trim() || `Cliente ${profile.cedula}`;
   const cuotaMensual = Number(profile.monthlyAmount ?? 55);
@@ -586,7 +588,7 @@ export async function POST(request: Request) {
 
       const requestedKey = String(body.memberKey ?? "").trim().toUpperCase();
       const memberKey = isMemberKey(requestedKey) ? requestedKey : generateMemberKey();
-      const memberKeyCipher = await encryptMemberKey(memberKey, process.env.AUTH_SECRET ?? "");
+      const memberKeyCipher = await encryptMemberKeyWithEnv(memberKey, process.env);
 
       if (!memberKeyCipher) {
         return NextResponse.json(

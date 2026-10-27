@@ -83,6 +83,7 @@ const ETIQUETA_ACCION: Record<string, string> = {
   TOTP_DISABLED: "Segundo factor desactivado",
   TOTP_CHALLENGE_FAILED: "Código de verificación fallido",
   RECOVERY_CODE_USED: "Código de recuperación usado",
+  AUDIT_PURGE: "Purga por retención",
 };
 
 export default function AuditoriaView() {

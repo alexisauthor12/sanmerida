@@ -553,12 +553,24 @@ model AuditLog {
 
 | Tipo | Retencion | Mecanismo |
 |---|---|---|
-| Auditoria de accesos a expedientes/documentos | **2 anos** | `scripts/purge-audit-log.mjs --before <fecha> --apply` |
-| Auditoria de login y licencia | 1 ano | idem |
-| Registro de la propia purga | permanente (resumen) | se escribe un `AuditLog` con el conteo purgado |
+| Auditoria de accesos a expedientes/documentos | **2 anos** | `scripts/purge-audit-log.mjs --apply` |
+| Auditoria de login y licencia | 1 ano | idem (ventana propia) |
+| Registro de la propia purga | permanente (resumen) | fila `AUDIT_PURGE`, **excluida del borrado** |
 
-La retencion se configura con `AUDIT_RETENTION_DAYS` para poder ajustarla sin
+La retencion se configura con `AUDIT_RETENTION_DAYS` (general, por defecto 730) y
+`AUDIT_RETENTION_DAYS_AUTH` (sesion, por defecto 365), para poder ajustarla sin
 tocar codigo.
+
+**Implementado** (`scripts/purge-audit-log.mjs`):
+
+- El **simulacro es el comportamiento por defecto**: nada se borra sin `--apply`.
+- Dos ventanas a la vez: las acciones de sesion (login, logout, licencia, 2FA) se
+  conservan menos que los accesos y cambios.
+- `--before AAAA-MM-DD` fuerza un corte explicito para los dos grupos.
+- Las filas `AUDIT_PURGE` nunca se borran: siempre se puede reconstruir que se
+  limpio y cuando.
+- Si el proceso falla, no escribe el resumen: la ausencia de fila `AUDIT_PURGE`
+  delata que la purga no se completo.
 
 ### 6.5 Consulta (panel admin)
 
@@ -1008,6 +1020,13 @@ script disfrazado de imagen se rechazan; que un `RIFF` de audio **no** se confun
 con WebP; que la extension no puede mentir sobre el contenido; y que un MIME
 generico no bloquea una subida legitima.
 
+### 11.9 `tests/member-key-secret.test.mjs` — separacion de secretos
+
+Comprueba la transicion sin cortes: sin secreto propio se sigue usando
+`AUTH_SECRET`; con secreto propio se cifra con el nuevo y **no** con el heredado;
+las credenciales cifradas antes de separar los secretos siguen abriendo gracias al
+respaldo heredado; y sin ningun secreto configurado no se cifra nada.
+
 ---
 
 ## 12) Plan de implementacion por fases
@@ -1051,7 +1070,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 2.2 | Validacion por magic bytes en las subidas — **hecho** (`src/lib/file-signature.mjs`, seccion 8.8) |
 | 2.3 | Backups cifrados + prueba de restauracion documentada |
 | 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
-| 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) |
+| 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) — **hecho** (seccion 6.4; el resumen queda como `AUDIT_PURGE`) |
 | 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes |
 | 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros |
 
@@ -1062,7 +1081,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 3.1 | 2FA (TOTP) obligatorio para ADMIN — **hecho** (seccion 7.6; disponible para todos los roles) |
 | 3.2 | Cloudflare WAF + Access delante de `/admin` |
 | 3.3 | Cifrado a nivel de columna para PII sensible |
-| 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion |
+| 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion — **hecho** (seccion 13.7) |
 | 3.5 | Rotacion periodica de secretos y de la licencia administrativa (runbook) |
 
 ---
@@ -1135,7 +1154,7 @@ implementan junto con esa capacidad:
 fija), con respaldo en memoria para desarrollo. Si mas adelante se necesita
 consistencia fuerte, se migra a Durable Object sin cambiar la interfaz.
 
-### 13.7 Separacion de secretos: autorizada
+### 13.7 Separacion de secretos: **implementada**
 
 Se separa `AUTH_SECRET` (firma de sesiones) de
 `MEMBER_KEY_ENCRYPTION_SECRET` (cifrado de credenciales de miembros). Requiere:
@@ -1148,7 +1167,22 @@ Se separa `AUTH_SECRET` (firma de sesiones) de
 5. Ventana de mantenimiento acordada (no corta el servicio, pero conviene hacerlo
    sin trafico).
 
-**Prioridad:** Fase 3. No bloquea la contencion, pero se documenta desde ya.
+**Estado:** el codigo ya esta listo y **la app funciona igual con o sin el secreto
+nuevo**. `src/lib/member-key-secret.mjs` resuelve el secreto asi:
+
+- Se cifra **siempre** con `MEMBER_KEY_ENCRYPTION_SECRET`; si no existe, se sigue
+  usando `AUTH_SECRET` (nada se rompe antes de la rotacion).
+- Al **descifrar** se prueba el secreto activo y, si falla, el heredado. Asi las
+  credenciales cifradas antes de la separacion siguen abriendo hasta que se
+  ejecute la rotacion.
+
+`scripts/rotate-member-key-secret.mjs` recifra fila a fila y es idempotente: si una
+credencial ya abre con el secreto nuevo, no la toca. Las filas que no abren con
+ninguno de los dos secretos **no se sobrescriben**: se listan para revision manual.
+Al terminar deja un resumen auditado (`CREDENCIAL_ROTATE`).
+
+Pendiente de ejecucion: definir el secreto y correr la rotacion (pasos 1-5). Hasta
+entonces ambos usos siguen compartiendo clave, que es la situacion de partida.
 
 
 ---

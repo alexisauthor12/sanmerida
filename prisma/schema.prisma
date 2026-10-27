@@ -61,6 +61,11 @@ enum AuditAction {
   TOTP_CHALLENGE_FAILED
   /// Se consumio un codigo de recuperacion de un solo uso.
   RECOVERY_CODE_USED
+
+  /// Resumen de una purga por retencion (`scripts/purge-audit-log.mjs`). Estas
+  /// filas son **permanentes**: la purga nunca las borra, para que quede rastro de
+  /// que la limpieza se hizo y de cuanto se borro.
+  AUDIT_PURGE
 }
 
 model User {

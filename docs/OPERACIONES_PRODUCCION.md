@@ -359,6 +359,12 @@ npm run build
 - Migraciones aplicadas con `db:migrate:deploy`.
 - Login admin validado con licencia encriptada.
 - Endpoints sensibles responden `401/403` sin sesion/rol.
+- `npx wrangler secret list` muestra `AUTH_SECRET` (y, si ya se separo,
+  `MEMBER_KEY_ENCRYPTION_SECRET`). **Nunca** en `wrangler.jsonc` `vars`.
+- Segundo factor probado en una cuenta de prueba: alta, codigo de recuperacion y
+  baja (seccion 7.6 de `SEGURIDAD_INTEGRAL.md`).
+- Tras desplegar, un login real: los tokens anteriores se invalidan a proposito
+  (no llevan `tokenVersion`), asi que todo el mundo vuelve a entrar una vez.
 
 ## 7) Monitoreo operativo recomendado
 
@@ -366,6 +372,8 @@ npm run build
 - Tiempo de respuesta en `/api/auth/login` y `/api/member-files/scan`.
 - Memoria y CPU del proceso Node (OCR puede elevar CPU).
 - Estado de conexiones a Postgres.
+- Panel de auditoria (`/admin` -> Auditoria): descargas masivas (>20/h), fallos de
+  acceso (>10/h) y accesos fuera de horario.
 
 ## 8) Backups y recuperacion
 
@@ -379,3 +387,67 @@ Documentos (expedientes):
 - `node scripts/check-storage-integrity.mjs` para detectar faltantes.
 - `node scripts/purge-trash.mjs --apply` para vaciar la papelera (30 dias).
 - Guardar el respaldo fuera del equipo (nube o disco externo).
+
+## 9) Mantenimiento programado
+
+| Tarea | Cuando | Comando |
+|---|---|---|
+| Purgar la auditoria por retencion | Mensual | `node scripts/purge-audit-log.mjs --apply` |
+| Vaciar la papelera | Semanal | `node scripts/purge-trash.mjs --apply` |
+| Verificar integridad del almacenamiento | Mensual | `node scripts/check-storage-integrity.mjs` |
+| Respaldo de usuarios | Antes de tocar el esquema | `node scripts/backup-users.mjs` |
+
+Todos los scripts de escritura son **simulacro por defecto**: sin `--apply` no
+cambian nada. Leer siempre la salida del simulacro antes de aplicarlo.
+
+### 9.1 Purgar la auditoria
+
+`node scripts/purge-audit-log.mjs` (simulacro) y `--apply` para aplicarlo.
+
+- Dos ventanas: `AUDIT_RETENTION_DAYS` (general, 730 dias por defecto) y
+  `AUDIT_RETENTION_DAYS_AUTH` (sesion, 365).
+- Deja un resumen permanente en la auditoria (`AUDIT_PURGE`), que nunca se borra.
+- Si el resumen no aparece, la purga no llego a completarse.
+
+### 9.2 Separar y rotar el secreto de credenciales
+
+Mientras `MEMBER_KEY_ENCRYPTION_SECRET` no exista, el cifrado de las claves de
+miembro sigue usando `AUTH_SECRET`. Para separarlos:
+
+1. `node scripts/backup-users.mjs`
+2. `npx wrangler secret put MEMBER_KEY_ENCRYPTION_SECRET` (valor nuevo, distinto de
+   `AUTH_SECRET`; 32+ caracteres aleatorios)
+3. `node scripts/rotate-member-key-secret.mjs` (simulacro: dice cuantas filas
+   recifraria y si alguna es ilegible)
+4. `node scripts/rotate-member-key-secret.mjs --apply`
+5. Lectura de prueba en el panel (Monitor de cuotas -> credenciales) y
+   `node scripts/check-storage-integrity.mjs`
+
+Es idempotente: se puede repetir. Las filas que no abren con ningun secreto no se
+sobrescriben, se listan para revisarlas a mano.
+
+### 9.3 Restablecer el segundo factor de una cuenta
+
+Si alguien pierde el dispositivo **y** los codigos de recuperacion:
+
+```
+node scripts/reset-user-totp.mjs --email <correo>          (simulacro)
+node scripts/reset-user-totp.mjs --email <correo> --apply
+```
+
+Queda registrado en la auditoria (`TOTP_DISABLED` con `metadata.via = script_cli`).
+Pedir a la persona que lo vuelva a activar de inmediato.
+
+### 9.4 La carpeta `.open-next/` es sensible
+
+El build de OpenNext escribe `.open-next/cloudflare/next-env.mjs` con **las
+variables de entorno del build en claro** (incluida la contrasena de la base, la
+`service_role` key y `AUTH_SECRET`).
+
+- No esta versionada (`.gitignore`) y **no se empaqueta** en el Worker desplegado:
+  se comprobo que ni `worker.js` ni el handler la importan.
+- Aun asi, mientras exista en el equipo contiene secretos: no compartir ni
+  comprimir la carpeta del proyecto sin borrarla antes, y tratarla como un
+  `.env.local`.
+- Si el equipo se pierde o se comparte, hay que **rotar** `AUTH_SECRET`,
+  `SUPABASE_SERVICE_ROLE_KEY` y la contrasena de la base.

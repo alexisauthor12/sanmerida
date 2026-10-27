@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/api-guard";
-import { encryptMemberKey } from "@/lib/member-credentials.mjs";
+import { encryptMemberKeyWithEnv } from "@/lib/member-key-secret.mjs";
 import { prisma } from "@/lib/prisma";
 import { getMotoBySlug } from "@/data/motos";
 
@@ -269,7 +269,7 @@ export async function POST(request: Request) {
 
   // La clave también queda en el expediente, cifrada y de forma reversible,
   // para que el administrador pueda consultarla al buscar al miembro.
-  const memberKeyCipher = await encryptMemberKey(encryptedKey, process.env.AUTH_SECRET ?? "");
+  const memberKeyCipher = await encryptMemberKeyWithEnv(encryptedKey, process.env);
 
   const createdUser = await prisma.user.create({
     data: {

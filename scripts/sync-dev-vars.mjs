@@ -27,6 +27,10 @@ const REQUERIDAS = [
   "SUPABASE_SERVICE_ROLE_KEY",
   "DATABASE_URL",
   "DIRECT_URL",
+  // Opcional pero recomendada: separa el cifrado de credenciales de la firma de
+  // sesiones (docs/SEGURIDAD_INTEGRAL.md 13.7). Si no esta, se sigue usando
+  // AUTH_SECRET y la app funciona igual.
+  "MEMBER_KEY_ENCRYPTION_SECRET",
 ];
 
 const ORIGEN = path.resolve(process.cwd(), ".env.local");
