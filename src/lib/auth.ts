@@ -1,4 +1,5 @@
 import { jwtVerify, SignJWT } from "jose";
+import { resolveAuthSecret } from "@/lib/secret-helpers.mjs";
 
 export const AUTH_COOKIE_NAME = "san_team_session";
 export const ADMIN_ACCESS_COOKIE_NAME = "san_admin_access";
@@ -15,16 +16,17 @@ type AdminAccessPayload = {
   email: string;
 };
 
-const getAuthSecret = () => {
-  const secret = process.env.AUTH_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV !== "production") {
-      return new TextEncoder().encode("san-local-dev-auth-secret");
-    }
-    throw new Error("AUTH_SECRET no está configurado.");
-  }
-  return new TextEncoder().encode(secret);
-};
+/**
+ * Secreto de firma de los JWT. **Fail-closed en todos los entornos**: si falta
+ * `AUTH_SECRET` la aplicacion no firma sesiones (ver `docs/SEGURIDAD_INTEGRAL.md`,
+ * hallazgo C). Ya no existe un secreto de desarrollo por defecto.
+ */
+const getAuthSecret = () =>
+  new TextEncoder().encode(
+    resolveAuthSecret(process.env.AUTH_SECRET, {
+      warn: (mensaje) => console.warn(`[auth] ${mensaje}`),
+    }),
+  );
 
 export async function createSessionToken(payload: SessionPayload) {
   const secret = getAuthSecret();
