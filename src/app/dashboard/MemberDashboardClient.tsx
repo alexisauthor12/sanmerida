@@ -313,12 +313,20 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
     <div className="min-h-screen bg-[#f3f4f6] text-zinc-900">
       <div className="flex min-h-screen">
         <aside className="hidden w-72 shrink-0 bg-[#eef0f3] lg:block">
-          <div className="flex h-[68px] items-center border-b border-white/10 bg-black px-5">
-            <div className="flex items-center gap-3">
-              <Image src="/Logo.png" alt="Logo SAN" width={34} height={34} className="h-auto w-auto" />
-              <div>
+          <div className="flex h-[68px] items-center overflow-hidden border-b border-white/10 bg-black px-5">
+            <div className="flex w-full min-w-0 items-center gap-3">
+              <Image
+                src="/Logo.png"
+                alt="San Mérida"
+                width={1584}
+                height={672}
+                sizes="80px"
+                priority
+                className="h-8 w-auto max-w-[96px] shrink-0 object-contain"
+              />
+              <div className="min-w-0">
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">SAN</p>
-                <p className="text-sm font-semibold leading-none text-white">TEAM SAN PANEL</p>
+                <p className="truncate text-sm font-semibold leading-none text-white">TEAM SAN PANEL</p>
               </div>
             </div>
           </div>
@@ -354,13 +362,6 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
                 <span className="rounded-full border border-zinc-200 px-3 py-1">Transferencia</span>
                 <span className="rounded-full border border-zinc-200 px-3 py-1">Zelle</span>
               </div>
-
-              <button
-                onClick={() => void openAdminModal()}
-                className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-800"
-              >
-                Admin
-              </button>
             </div>
           </div>
         </aside>
