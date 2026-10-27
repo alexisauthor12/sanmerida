@@ -653,6 +653,20 @@ export async function POST(request: Request) {
     }
   }
 
+  await recordAudit({
+    action: "DOCUMENTO_UPLOAD",
+    actor: {
+      userId: access.user.userId,
+      email: access.user.email,
+      role: access.user.role,
+    },
+    targetType: "MemberAsset",
+    targetId: asset.id,
+    targetLabel: labelExpediente(cedula),
+    metadata: { assetType, documentKey, variant, mimeType: asset.mimeType, size: asset.size },
+    request,
+  });
+
   return NextResponse.json({
     ok: true,
     message: `${assetType} ${documentKey} ${variant.toLowerCase()} cargado correctamente.`,
@@ -730,6 +744,20 @@ export async function DELETE(request: Request) {
   }
 
   await prisma.memberAsset.delete({ where: { id: existing.id } });
+
+  await recordAudit({
+    action: "DOCUMENTO_DELETE",
+    actor: {
+      userId: access.user.userId,
+      email: access.user.email,
+      role: access.user.role,
+    },
+    targetType: "MemberAsset",
+    targetId: existing.id,
+    targetLabel: labelExpediente(cedula),
+    metadata: { assetType, documentKey, variant, recuperable: true },
+    request,
+  });
 
   return NextResponse.json({
     ok: true,
