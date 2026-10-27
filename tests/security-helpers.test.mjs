@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isBcryptHash, normalizeMemberUsername } from "../src/lib/security-helpers.mjs";
+import { isBcryptHash, maskCedula, normalizeMemberUsername } from "../src/lib/security-helpers.mjs";
 
 test("normalizeMemberUsername normaliza espacios, case y arroba", () => {
   assert.equal(normalizeMemberUsername(" Alexis"), "@alexis");
@@ -16,4 +16,13 @@ test("isBcryptHash valida prefijos bcrypt permitidos", () => {
   assert.equal(isBcryptHash("$2b$12$abcdefghijklmnopqrstuvabcdefghijklmnopqrstuvabcd"), false);
   assert.equal(isBcryptHash("$1$bad-format"), false);
   assert.equal(isBcryptHash(""), false);
+});
+
+test("maskCedula deja ver solo los ultimos 4 digitos", () => {
+  assert.equal(maskCedula("31033017"), "***3017");
+  assert.equal(maskCedula("V-31.033.017"), "***3017");
+  assert.equal(maskCedula("123"), "***123");
+  assert.equal(maskCedula(""), "—");
+  assert.equal(maskCedula(null), "—");
+  assert.equal(maskCedula("abc"), "—");
 });
