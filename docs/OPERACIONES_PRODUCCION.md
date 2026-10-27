@@ -26,11 +26,27 @@ Notas:
   `AUTH_SECRET`, las credenciales guardadas dejan de poder descifrarse** (se
   vuelven a generar desde el panel) y todas las sesiones se invalidan.
 
-> Aviso local: en `.env.local` un hash bcrypt debe ir como variable de entorno
-> real (no solo en el archivo), porque Next expande los `$` al leer `.env*` y el
-> hash llega corrupto al servidor ("ADMIN_LICENSE_HASH no tiene formato bcrypt
-> valido"). En produccion esto no aplica: los secretos del Worker no pasan por
-> ese mecanismo.
+> Aviso local: en `.env.local` los `$` del hash bcrypt van **escapados** con
+> barra invertida:
+>
+> ```
+> ADMIN_LICENSE_HASH=\$2b\$12\$tu-hash-aqui
+> ```
+>
+> Next pasa los valores de `.env*` por `dotenv-expand`, que **siempre** intenta
+> interpretar los `$` del valor. Sin el escape, `$2b` se lee como una variable de
+> entorno llamada `2b`, que no existe, y el hash llega vacio al servidor
+> (`500` «Configuracion de seguridad administrativa incompleta» o
+> «ADMIN_LICENSE_HASH no tiene formato bcrypt valido»). Con `\$`, dotenv-expand
+> devuelve el valor literal y el hash llega intacto.
+>
+> **No** definas `ADMIN_LICENSE_HASH` como variable de entorno del proceso para
+> "saltarte" el problema: si `process.env` ya tiene la clave, dotenv-expand toma
+> ese valor y le aplica la interpolacion igualmente, con lo que el hash acaba
+> **vacio** (comprobado con `@next/env` en Next 16.4.3). La unica via local es el
+> escape en `.env.local`. En produccion esto no aplica: los secretos del Worker no
+> pasan por ese mecanismo.
+
 >
 > Hallazgo adicional: `opennextjs-cloudflare` tambien hornea los valores de
 > `.dev.vars` en `.open-next/cloudflare/next-env.mjs`, y ahi el hash llega
@@ -827,6 +843,63 @@ curl.exe -s -X POST https://sanmeridajz.com/api/auth/login -H "content-type: app
 > Un `500` significa que Prisma no pudo hablar con ella. Es la comprobación más rápida
 > que existe para saber si el acceso está roto.
 
+
+### 9.16 Crear o restablecer las credenciales del administrador
+
+El acceso de administrador son **dos pasos**, y hacen falta **cuatro datos**:
+
+| Dato | Para qué | Dónde vive |
+|---|---|---|
+| **Correo** | Identifica la cuenta en el login | Secreto `ADMIN_ACCOUNT_EMAIL` + tabla `User` |
+| **Contraseña** | Login normal (`/api/auth/login`) | Solo el hash bcrypt en la tabla `User` |
+| **Usuario admin** | Step-up de licencia | Secreto `ADMIN_USERNAME` |
+| **Licencia** | Step-up (`/api/auth/admin-license`) | Solo el hash bcrypt en `ADMIN_LICENSE_HASH` |
+
+**Se hace con un solo comando:**
+
+```powershell
+node scripts/crear-admin.mjs                 # simulacro: genera y muestra, no escribe
+node scripts/crear-admin.mjs --apply         # aplica (por defecto: sanmeridaadmin@gmail.com)
+node scripts/crear-admin.mjs --apply --email otro@correo.com
+```
+
+Al aplicar:
+
+1. Crea o **restablece** el `User` con rol `ADMIN` (bcrypt coste 12), sin duplicar si el
+   correo ya existía.
+2. **Cierra las sesiones anteriores** de esa cuenta (`tokenVersion++`) y limpia bloqueos.
+3. Deja el **segundo factor desactivado** para poder entrar la primera vez.
+4. Escribe los tres secretos en `.env.local` y `.dev.vars`, y genera
+   `tmp-secretos-admin.json` para publicarlos en el Worker.
+
+**Publicar en producción** (el script no lo hace solo, a propósito):
+
+```powershell
+npx wrangler secret bulk tmp-secretos-admin.json
+Remove-Item tmp-secretos-admin.json      # contiene el hash: no lo dejes por ahí
+```
+
+**Comprobar que funciona de verdad** (los tres pasos, no solo el login):
+
+```powershell
+node scripts/verificar-acceso-admin.mjs <correo> <contrasena> <usuario> <licencia>
+```
+
+Si el paso 3 (`/api/auditoria`) responde `200`, la entrada funciona. Que el login diga «ok»
+no basta: hay que llegar al panel.
+
+> **La contraseña y la licencia se generan al azar en cada ejecución**, así que **hay que
+> guardarlas al momento**. Volver a ejecutar el script **invalida las anteriores**: la
+> licencia no se puede recuperar de su hash (es bcrypt).
+>
+> **Activa el segundo factor** desde el panel (Seguridad → segundo factor) en cuanto
+> entres. El script lo deja apagado solo para que puedas llegar la primera vez; la Fase 3
+> del plan pide 2FA para ADMIN.
+>
+> En `.env.local` el hash va con los `$` **escapados** (`\$2b\$12\$...`): Next pasa los
+> valores por `dotenv-expand` y sin el escape el hash llega vacío. El script ya lo hace.
+
+## 10) Procedimiento de incidentes de seguridad
 
 > Cierra el paso **2.6** de `docs/SEGURIDAD_INTEGRAL.md`. El objetivo no es tener un
 > documento: es que **la primera hora no se improvise**. Quien detecta algo abre aqui y

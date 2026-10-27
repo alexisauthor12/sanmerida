@@ -164,14 +164,21 @@ for (const archivo of [".env.local", ".dev.vars"]) {
     continue;
   }
 
+  // En `.env.local` los `$` del hash bcrypt van **escapados**: Next pasa los valores
+  // por `dotenv-expand`, que siempre intenta interpretarlos. Sin el escape, `$2b` se
+  // lee como una variable llamada `2b` (que no existe) y el hash llega vacio al
+  // servidor. En `.dev.vars` no se escapa: lo lee wrangler, que no expande.
+  const escapar = archivo === ".env.local";
+
   let contenido = readFileSync(archivo, "utf8");
 
   for (const [clave, valor] of Object.entries(VALORES)) {
+    const escrito = escapar ? valor.replace(/\$/g, "\\$") : valor;
     const patron = new RegExp(`^${clave}=.*$`, "m");
 
     contenido = patron.test(contenido)
-      ? contenido.replace(patron, `${clave}=${valor}`)
-      : `${contenido.trimEnd()}\n${clave}=${valor}\n`;
+      ? contenido.replace(patron, `${clave}=${escrito}`)
+      : `${contenido.trimEnd()}\n${clave}=${escrito}\n`;
   }
 
   writeFileSync(archivo, contenido, "utf8");
