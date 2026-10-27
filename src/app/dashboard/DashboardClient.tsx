@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { 
   Home, 
   BookOpen, 
@@ -29,16 +30,60 @@ type User = {
   isMember: boolean;
 };
 
+const API_BASE =
+  typeof window !== "undefined" && window.location.hostname === "localhost"
+    ? ""
+    : process.env.NEXT_PUBLIC_API_BASE || "";
+
 // --- Sub-vistas ---
 
+type SessionStatus = {
+  ok?: boolean;
+  authenticated?: boolean;
+  role?: "guest" | "member" | "account";
+  adminValidated?: boolean;
+  adminTotalAccess?: boolean;
+};
+
 function BienvenidaView({ user }: { user: User }) {
+  const [estado, setEstado] = useState<SessionStatus | null>(null);
+  const [errorEstado, setErrorEstado] = useState(false);
+
+  // El estado de la sesion (y si la licencia administrativa esta validada) viene
+  // del endpoint real `/api/auth/session-status`: nunca se asume en el cliente.
+  useEffect(() => {
+    let activo = true;
+
+    fetch(`${API_BASE}/api/auth/session-status`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: SessionStatus) => {
+        if (activo && data.ok) setEstado(data);
+      })
+      .catch(() => {
+        if (activo) setErrorEstado(true);
+      });
+
+    return () => {
+      activo = false;
+    };
+  }, []);
+
+  const licencia = errorEstado
+    ? "No se pudo consultar"
+    : estado === null
+      ? "Consultando…"
+      : estado.adminValidated
+        ? "Validada"
+        : "No validada";
+
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="mb-8 rounded-2xl bg-gradient-to-r from-zinc-900 to-black p-8 border border-white/10 relative overflow-hidden">
         <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 bg-white/5 rounded-full blur-3xl"></div>
         <h2 className="text-3xl font-light text-white relative z-10">Hola, {user.nombre}</h2>
         <p className="text-white/60 mt-2 relative z-10 max-w-xl">
-          Bienvenido a tu panel de control industrial. Aquí puedes gestionar todos tus procesos de movilidad, revisar catálogos empresariales y hacer seguimiento a tus adquisiciones.
+          Este es el panel de gestión de San Mérida. Desde aquí revisas el catálogo corporativo, las
+          novedades del equipo y el acceso administrativo a los expedientes.
         </p>
       </div>
 
@@ -49,11 +94,15 @@ function BienvenidaView({ user }: { user: User }) {
               <Activity size={24} />
             </div>
             <div>
-              <p className="text-sm text-white/50 uppercase tracking-wider">Estado Actual</p>
-              <p className="text-white font-medium">Perfil en Verificación</p>
+              <p className="text-sm text-white/50 uppercase tracking-wider">Estado de la sesión</p>
+              <p className="text-white font-medium">
+                {estado?.authenticated ? "Sesión activa" : "Verificando…"}
+              </p>
             </div>
           </div>
-          <p className="text-sm text-white/60">Completa tus datos de facturación para activar adquisiciones.</p>
+          <p className="text-sm text-white/60">
+            Licencia administrativa: <span className="text-white">{licencia}</span>.
+          </p>
         </div>
 
         <div className="bg-zinc-950/50 border border-white/5 p-6 rounded-2xl hover:bg-zinc-900/50 transition">
@@ -62,11 +111,13 @@ function BienvenidaView({ user }: { user: User }) {
               <TrendingUp size={24} />
             </div>
             <div>
-              <p className="text-sm text-white/50 uppercase tracking-wider">Línea de Crédito</p>
-              <p className="text-white font-medium">Pre-Aprobada</p>
+              <p className="text-sm text-white/50 uppercase tracking-wider">Catálogo</p>
+              <p className="text-white font-medium">{MOTOS.length} modelos cargados</p>
             </div>
           </div>
-          <p className="text-sm text-white/60">Sujeto a confirmación de garante e historial crediticio.</p>
+          <p className="text-sm text-white/60">
+            Los precios y el plan de financiamiento de cada modelo se configuran desde el panel admin.
+          </p>
         </div>
 
         <div className="bg-zinc-950/50 border border-white/5 p-6 rounded-2xl hover:bg-zinc-900/50 transition">
@@ -79,7 +130,11 @@ function BienvenidaView({ user }: { user: User }) {
               <p className="text-white font-medium">{user.isMember ? "Miembro TEAM SAN" : "Usuario Estándar"}</p>
             </div>
           </div>
-          <p className="text-sm text-white/60">Sube de nivel para acceder a flota prioritaria.</p>
+          <p className="text-sm text-white/60">
+            {user.isMember
+              ? "Tu cuenta está vinculada a un expediente de miembro."
+              : "Con la licencia administrativa gestionas expedientes, cuotas y novedades."}
+          </p>
         </div>
       </div>
       
@@ -92,9 +147,11 @@ function BienvenidaView({ user }: { user: User }) {
           <ul className="space-y-6 relative pl-10">
             <li>
               <div className="absolute left-[-5px] top-1 w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]"></div>
-              <p className="text-sm text-white/50">10 Mar 2026</p>
+              <p className="text-sm text-white/50">Completado</p>
               <p className="text-white font-medium">Registro completado</p>
-              <p className="text-sm text-white/60">Tu cuenta ha sido creada exitosamente en el sistema.</p>
+              <p className="text-sm text-white/60">
+                Tu cuenta {user.email} está activa en el sistema.
+              </p>
             </li>
             <li className="opacity-50">
               <div className="absolute left-[-4px] top-1 w-3 h-3 rounded-full border-2 border-white/30 bg-black"></div>
@@ -115,28 +172,36 @@ function BienvenidaView({ user }: { user: User }) {
   );
 }
 
-function CatalogosView() {
+function CatalogosView({ onExplorarModelos }: { onExplorarModelos: () => void }) {
+  // Solo SAN Motos tiene catálogo cargado hoy. Las otras dos divisiones se
+  // muestran marcadas como "en preparación" en vez de simular contenido.
   const catalogos = [
     {
       titulo: "SAN Motos",
       desc: "Autonomía y eficiencia para ciudad. Scooters, urbanas y deportivas bajo el sello San Mérida.",
       icon: <Bike size={32} className="text-white/80" />,
       img: "/ek-xpress.png",
-      color: "from-zinc-800 to-black"
+      color: "from-zinc-800 to-black",
+      disponible: true,
+      detalle: `${MOTOS.length} modelos cargados`,
     },
     {
       titulo: "SAN Carros",
       desc: "Nuevas alternativas de movilidad a cuatro ruedas. Seguridad, confort y bajo consumo.",
       icon: <CarFront size={32} className="text-white/80" />,
-      img: "/Logo.png", // Usando fallback
-      color: "from-blue-950/40 to-black"
+      img: "",
+      color: "from-blue-950/40 to-black",
+      disponible: false,
+      detalle: "División en preparación",
     },
     {
       titulo: "SAN Tecnología",
       desc: "Ecosistema interconectado. Gadgets, hardware de rastreo y accesorios inteligentes.",
       icon: <Smartphone size={32} className="text-white/80" />,
-      img: "/Logo.png", // Usando fallback
-      color: "from-purple-950/40 to-black"
+      img: "",
+      color: "from-purple-950/40 to-black",
+      disponible: false,
+      detalle: "División en preparación",
     }
   ];
 
@@ -158,18 +223,35 @@ function CatalogosView() {
               <h3 className="text-xl font-medium text-white mb-3">{cat.titulo}</h3>
               <p className="text-white/60 text-sm leading-relaxed mb-8 flex-1">{cat.desc}</p>
               
-              <div className="relative h-40 w-full mb-6">
-                <Image 
-                  src={cat.img} 
-                  alt={cat.titulo}
-                  fill
-                  className={`object-contain ${cat.titulo.includes("Carro") || cat.titulo.includes("Tecnolo") ? "opacity-30 grayscale" : "drop-shadow-2xl group-hover:scale-105 transition duration-700"}`}
-                />
+              <div className="relative h-40 w-full mb-6 flex items-center justify-center">
+                {cat.img ? (
+                  <Image
+                    src={cat.img}
+                    alt={cat.titulo}
+                    fill
+                    className={
+                      cat.disponible
+                        ? "object-contain drop-shadow-2xl group-hover:scale-105 transition duration-700"
+                        : "object-contain opacity-30 grayscale"
+                    }
+                  />
+                ) : (
+                  <p className="text-sm text-white/30">{cat.detalle}</p>
+                )}
               </div>
 
-              <button className="w-full py-3 rounded-lg border border-white/20 bg-black/50 text-sm text-white/90 hover:bg-white hover:text-black transition">
-                Explorar {cat.titulo}
-              </button>
+              {cat.disponible ? (
+                <button
+                  onClick={onExplorarModelos}
+                  className="w-full py-3 rounded-lg border border-white/20 bg-black/50 text-sm text-white/90 hover:bg-white hover:text-black transition"
+                >
+                  Ver los {MOTOS.length} modelos
+                </button>
+              ) : (
+                <div className="w-full py-3 rounded-lg border border-white/10 bg-black/40 text-center text-sm text-white/40">
+                  {cat.detalle}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -178,8 +260,23 @@ function CatalogosView() {
   );
 }
 
-function ModelosView() {
+function ModelosView({ busqueda }: { busqueda: string }) {
   const carruselRef = useRef<HTMLDivElement>(null);
+
+  // La busqueda del encabezado filtra el catalogo real (`MOTOS`): no hay datos
+  // de disponibilidad simulados.
+  const modelos = useMemo(() => {
+    const termino = busqueda.trim().toLowerCase();
+
+    if (!termino) return MOTOS;
+
+    return MOTOS.filter((moto) =>
+      [moto.nombre, moto.categoria, moto.descripcion, moto.motor, moto.transmision]
+        .join(" ")
+        .toLowerCase()
+        .includes(termino),
+    );
+  }, [busqueda]);
 
   const mover = (direccion: "next" | "prev") => {
     const container = carruselRef.current;
@@ -196,7 +293,9 @@ function ModelosView() {
       <div className="flex flex-wrap items-end justify-between mb-8 gap-4">
         <div>
           <h2 className="text-2xl font-light text-white mb-2">Flota de Modelos</h2>
-          <p className="text-white/60">Disponibilidad en tiempo real de nuestra línea Moto.</p>
+          <p className="text-white/60">
+            Catálogo vigente de nuestra línea Moto ({modelos.length} de {MOTOS.length} modelos).
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={() => mover("prev")} className="h-10 w-10 flex items-center justify-center rounded-full border border-white/20 hover:bg-white/10 transition">←</button>
@@ -208,7 +307,12 @@ function ModelosView() {
         ref={carruselRef}
         className="flex snap-x snap-mandatory gap-6 overflow-x-auto pb-6 [scrollbar-width:thin] scroll-smooth flex-1"
       >
-        {MOTOS.map((modelo) => (
+        {modelos.length === 0 ? (
+          <p className="text-sm text-white/50">
+            No hay modelos que coincidan con «{busqueda}». Prueba con otro término.
+          </p>
+        ) : null}
+        {modelos.map((modelo) => (
           <div 
             key={modelo.slug} 
             data-model-card="true"
@@ -241,9 +345,12 @@ function ModelosView() {
               </div>
             </div>
 
-            <button className="w-full py-2.5 rounded-lg bg-white text-black font-medium text-sm hover:bg-white/90 transition">
-              Solicitar Cotización
-            </button>
+            <Link
+              href={`/modelos/${modelo.slug}`}
+              className="block w-full py-2.5 rounded-lg bg-white text-black font-medium text-sm text-center hover:bg-white/90 transition"
+            >
+              Ver ficha del modelo
+            </Link>
           </div>
         ))}
       </div>
@@ -252,42 +359,15 @@ function ModelosView() {
 }
 
 function EventosView() {
-  const eventos = [
-    { nombre: "Feria Industrial TEAM SAN", fecha: "10 Mar 2026", lugar: "Plaza Mayor, Mérida", estado: "Inscripciones Abiertas" },
-    { nombre: "Jornada Técnica de Modelos", fecha: "18 Mar 2026", lugar: "Sucursal Central", estado: "Cupos Limitados" },
-    { nombre: "Open House Empresarial Automotriz", fecha: "25 Mar 2026", lugar: "Centro de Convenciones", estado: "Próximamente" },
-  ];
-
+  // Los eventos son publicaciones REALES del feed con la categoria "Eventos":
+  // el equipo los crea desde el panel admin y aqui se muestran tal cual.
   return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-5xl">
-      <h2 className="text-2xl font-light text-white mb-2">Eventos y Convocatorias</h2>
-      <p className="text-white/60 mb-8">Participa en nuestras ferias de exhibición y pruebas de manejo.</p>
-
-      <div className="space-y-4">
-        {eventos.map((ev, i) => (
-          <div key={i} className="flex flex-col sm:flex-row gap-6 p-6 rounded-2xl border border-white/10 bg-zinc-950/50 hover:bg-white/5 transition items-start sm:items-center">
-            <div className="h-20 w-20 flex-shrink-0 rounded-xl bg-black border border-white/10 flex flex-col items-center justify-center">
-              <span className="text-xs text-white/50 uppercase">{ev.fecha.split(" ")[1]}</span>
-              <span className="text-2xl font-light text-white">{ev.fecha.split(" ")[0]}</span>
-            </div>
-            <div className="flex-1">
-              <h3 className="text-xl font-medium text-white mb-1">{ev.nombre}</h3>
-              <p className="text-sm text-white/50 flex items-center gap-2">
-                <CalendarDays size={14}/> {ev.lugar}
-              </p>
-            </div>
-            <div className="flex flex-col gap-3 w-full sm:w-auto">
-              <div className="px-3 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs text-center">
-                {ev.estado}
-              </div>
-              <button className="px-5 py-2 rounded-lg border border-white/20 text-sm text-white hover:bg-white hover:text-black transition">
-                Agendar
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    <NoticiasView
+      categoria="Eventos"
+      titulo="Eventos y Convocatorias"
+      descripcion="Eventos y convocatorias publicados por el equipo San Mérida."
+      mensajeVacio="Todavía no hay eventos publicados. El equipo los publica con la categoría «Eventos»."
+    />
   );
 }
 
@@ -324,9 +404,12 @@ function MiembroView() {
             <li className="text-sm text-white/80 flex items-center gap-3"><div className="w-1.5 h-1.5 rounded-full bg-yellow-500"></div> Aprobación crediticia express (4h)</li>
             <li className="text-sm text-white/80 flex items-center gap-3"><div className="w-1.5 h-1.5 rounded-full bg-yellow-500"></div> Mantenimientos prioritarios</li>
           </ul>
-          <button className="w-full py-3 rounded-lg bg-yellow-500 text-black font-semibold hover:bg-yellow-400 transition shadow-[0_0_15px_rgba(234,179,8,0.3)]">
-            Solicitar Upgrade Técnico
-          </button>
+          <Link
+            href="/register-member"
+            className="block w-full py-3 rounded-lg bg-yellow-500 text-center text-black font-semibold hover:bg-yellow-400 transition shadow-[0_0_15px_rgba(234,179,8,0.3)]"
+          >
+            Abrir registro de miembros
+          </Link>
         </div>
       </div>
     </div>
@@ -337,6 +420,7 @@ function MiembroView() {
 
 export default function DashboardClient({ user }: { user: User }) {
   const [activeTab, setActiveTab] = useState("inicio");
+  const [busqueda, setBusqueda] = useState("");
 
   const navItems = [
     { id: "inicio", label: "Bienvenida", icon: Home },
@@ -398,16 +482,21 @@ export default function DashboardClient({ user }: { user: User }) {
             <Search size={16} className="text-white/30" />
             <input 
               type="text" 
-              placeholder="Buscar modelos, cotizaciones..." 
+              placeholder="Buscar modelos del catálogo…" 
+              value={busqueda}
+              onChange={(event) => setBusqueda(event.target.value)}
+              aria-label="Buscar modelos del catálogo"
               className="bg-transparent border-none outline-none text-sm text-white px-3 w-full placeholder:text-white/30"
             />
-            <div className="hidden sm:flex text-[10px] font-medium text-white/30 bg-white/5 px-2 py-1 rounded border border-white/5">CTRL K</div>
           </div>
 
           <div className="flex items-center gap-4">
-            <button className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/5 transition relative">
+            <button
+              type="button"
+              aria-label="Notificaciones"
+              className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/5 transition"
+            >
               <Bell size={18} />
-              <span className="absolute top-2 right-2.5 w-2 h-2 rounded-full bg-red-500"></span>
             </button>
             
             <div className="flex items-center gap-3 pl-4 border-l border-white/10">
@@ -425,8 +514,10 @@ export default function DashboardClient({ user }: { user: User }) {
         {/* Área de visualización */}
         <div className="flex-1 overflow-y-auto p-6 lg:p-10 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-track]:bg-transparent">
           {activeTab === "inicio" && <BienvenidaView user={user} />}
-          {activeTab === "catalogos" && <CatalogosView />}
-          {activeTab === "modelos" && <ModelosView />}
+          {activeTab === "catalogos" && (
+            <CatalogosView onExplorarModelos={() => setActiveTab("modelos")} />
+          )}
+          {activeTab === "modelos" && <ModelosView busqueda={busqueda} />}
           {activeTab === "eventos" && <EventosView />}
           {activeTab === "noticias" && <NoticiasView />}
           {activeTab === "miembro" && <MiembroView />}
