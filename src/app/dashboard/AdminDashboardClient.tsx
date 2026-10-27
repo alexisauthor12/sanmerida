@@ -5,6 +5,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import SavedLocationPreview, { MissingLocationPreview } from "@/app/components/SavedLocationPreview";
 import AuditoriaView from "./AuditoriaView";
+import SeguridadView from "./SeguridadView";
 import { computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
 import {
   Activity,
@@ -27,6 +28,7 @@ import {
   Phone,
   TriangleAlert,
   Newspaper,
+  KeyRound,
 } from "lucide-react";
 
 const API_BASE =
@@ -3223,6 +3225,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
     { id: "contratos", label: "Contratos", icon: FileCheck2 },
     { id: "novedades", label: "Novedades", icon: Newspaper },
     { id: "auditoria", label: "Auditoría", icon: ShieldCheck },
+    { id: "seguridad", label: "Seguridad", icon: KeyRound },
     { id: "register-user", label: "Register user", icon: UserPlus },
   ] as const;
 
@@ -3331,6 +3334,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
       sectionId === "financiados" ||
       sectionId === "contratos" ||
       sectionId === "auditoria" ||
+      sectionId === "seguridad" ||
       sectionId === "register-user"
     ) {
       setActiveSection(sectionId);
@@ -6742,6 +6746,12 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
           </section>
         )}
 
+        {activeSection === "seguridad" && (
+          <section id="seguridad" className="scroll-mt-24">
+            <SeguridadView />
+          </section>
+        )}
+
         {activeSection === "resumen" && (
         <section id="contratos" className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 scroll-mt-24">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -6797,7 +6807,7 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         </main>
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 z-30 grid grid-cols-8 gap-1 border-t border-zinc-200 bg-white p-2 lg:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 grid grid-cols-9 gap-1 border-t border-zinc-200 bg-white p-2 lg:hidden">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/api-guard";
+import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,11 +30,19 @@ export async function GET() {
       role: "guest",
       adminValidated: false,
       adminTotalAccess: false,
+      totpEnabled: false,
     });
   }
 
   const { user, licenseValidated } = session;
   const role = ROLE_CLIENTE[user.role] ?? "guest";
+
+  // El segundo factor es una propiedad de la cuenta, no del token: se lee de la
+  // base para que la interfaz sepa si debe ofrecer activarlo.
+  const cuenta = await prisma.user.findUnique({
+    where: { id: user.userId },
+    select: { totpEnabled: true },
+  });
 
   return NextResponse.json({
     ok: true,
@@ -42,5 +51,6 @@ export async function GET() {
     // `licenseValidated` ya comprueba scope, usuario y tokenVersion de la licencia.
     adminValidated: licenseValidated,
     adminTotalAccess: user.role === "ADMIN" && licenseValidated,
+    totpEnabled: Boolean(cuenta?.totpEnabled),
   });
 }

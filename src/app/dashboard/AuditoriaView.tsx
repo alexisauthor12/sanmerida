@@ -79,6 +79,10 @@ const ETIQUETA_ACCION: Record<string, string> = {
   GRUPO_EXPORT: "Exportación de grupo",
   RATE_LIMIT_BLOCK: "Bloqueo por intentos",
   ACCESS_DENIED: "Acceso denegado",
+  TOTP_ENABLED: "Segundo factor activado",
+  TOTP_DISABLED: "Segundo factor desactivado",
+  TOTP_CHALLENGE_FAILED: "Código de verificación fallido",
+  RECOVERY_CODE_USED: "Código de recuperación usado",
 };
 
 export default function AuditoriaView() {

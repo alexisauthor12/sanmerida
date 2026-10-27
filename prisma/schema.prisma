@@ -53,6 +53,14 @@ enum AuditAction {
   RATE_LIMIT_BLOCK
   /// El guard denego el acceso (permiso insuficiente o recurso ajeno).
   ACCESS_DENIED
+
+  /// Segundo factor (TOTP).
+  TOTP_ENABLED
+  TOTP_DISABLED
+  /// El usuario presento un codigo TOTP incorrecto.
+  TOTP_CHALLENGE_FAILED
+  /// Se consumio un codigo de recuperacion de un solo uso.
+  RECOVERY_CODE_USED
 }
 
 model User {
@@ -80,6 +88,18 @@ model User {
   lastLoginAt       DateTime?
   lastLoginIp       String?
   passwordChangedAt DateTime?
+
+  /// Segundo factor (TOTP, RFC 6238). El secreto se guarda en base32; mientras
+  /// `totpEnabled` sea false esta pendiente de confirmar (el usuario lo genero
+  /// pero todavia no probo un codigo valido).
+  totpSecret      String?
+  totpEnabled     Boolean   @default(false)
+  totpConfirmedAt DateTime?
+
+  /// Codigos de recuperacion de un solo uso, guardados como hash SHA-256 (nunca
+  /// en claro). Al usarse uno se elimina de la lista. Son la salida de emergencia
+  /// si el usuario pierde el dispositivo; sin ellos un ADMIN quedaria bloqueado.
+  totpRecoveryCodes Json?
 
   memberProfile  MemberProfile?
   auditLogs      AuditLog[]

@@ -578,7 +578,8 @@ Nueva pestana **Auditoria** en `/admin` (permiso `auditoria:read`, con step-up):
 |---|---|
 | `/api/auth/login` | `LOGIN_SUCCESS`, `LOGIN_FAILED`, `RATE_LIMIT_BLOCK` |
 | `/api/auth/logout` | `LOGOUT` |
-| `/api/auth/admin-license` | `ADMIN_LICENSE_SUCCESS`, `ADMIN_LICENSE_FAILED` |
+| `/api/auth/admin-license` | `ADMIN_LICENSE_SUCCESS`, `ADMIN_LICENSE_FAILED`, `TOTP_CHALLENGE_FAILED` |
+| `/api/auth/totp/*` | `TOTP_ENABLED`, `TOTP_DISABLED`, `TOTP_CHALLENGE_FAILED`, `RECOVERY_CODE_USED` |
 | `/api/member-panel` | `EXPEDIENTE_READ` (propio o ajeno, con el actor) |
 | `/api/member-files/profile` | `EXPEDIENTE_READ` |
 | `/api/member-files/file` | `DOCUMENTO_READ` (con `targetLabel` = clave enmascarada) |
@@ -664,7 +665,12 @@ Ademas del limite por ventana, en la tabla `User`:
 - El mensaje de error es el mismo que con contrasena incorrecta (no se filtra si
   la cuenta esta bloqueada ni si existe).
 - El desbloqueo manual se hace desde el panel admin (`usuario:manage`, auditado).
-- Cada bloqueo escribe `RATE_LIMIT_BLOCK` en auditoria.
+- Cada intento fallido escribe `LOGIN_FAILED` con `metadata.intentos` y
+  `metadata.bloqueado`. El `RATE_LIMIT_BLOCK` es del limitador por ventana (7.3), no
+  del bloqueo de cuenta: son dos capas distintas y se auditan por separado.
+- **Implementado** en `src/app/api/auth/login/route.ts`: el bloqueo se comprueba
+  *antes* de bcrypt (no se gasta CPU en una cuenta bloqueada) y un codigo TOTP
+  incorrecto tambien cuenta como intento fallido.
 
 ### 7.5 Politica de contrasenas (equipo)
 
@@ -680,6 +686,40 @@ Ademas del limite por ventana, en la tabla `User`:
 La clave de miembro `SAN-MEMBER-XXXXXX` mantiene su formato por operativa, pero se
 **refuerza** con: rate limiting dedicado, bloqueo progresivo, alerta al
 administrador cuando se agota el 50% de los intentos y auditoria de cada intento.
+
+### 7.6 Segundo factor (TOTP) — **implementado**
+
+El bloqueo progresivo de 7.4 y el rate limiting de 7.3 protegen contra la fuerza
+bruta, pero **no** contra una contrasena (o una licencia) filtrada. El segundo
+factor cierra ese hueco.
+
+| Pieza | Archivo | Que hace |
+|---|---|---|
+| Nucleo TOTP | `src/lib/totp.mjs` | RFC 6238 sobre Web Crypto: `base32`, `hotp`, `generateTotpCode`, `verifyTotpCode`, `buildOtpAuthUri`, codigos de recuperacion |
+| Servicio | `src/lib/totp-service.ts` | `checkSecondFactor()`: valida y **consume** los codigos de recuperacion |
+| Alta | `POST /api/auth/totp/setup` + `enable` | Genera el secreto (pendiente) y lo confirma con un codigo valido |
+| Baja | `POST /api/auth/totp/disable` | Exige **contrasena + codigo**: una cookie robada no apaga el 2FA |
+| Interfaz | `src/app/dashboard/SeguridadView.tsx` | Autoservicio: alta, codigos de recuperacion y baja |
+| Emergencia | `scripts/reset-user-totp.mjs` | Desbloqueo por CLI (auditado) si se pierde el dispositivo **y** los codigos |
+
+Decisiones:
+
+- **Sin dependencias nuevas.** `crypto.subtle` existe en Node 20+ y en Workers, y
+  el nucleo esta verificado contra los vectores oficiales del RFC 6238.
+- **Ventana de +-1 periodo (30 s)** para tolerar la deriva del reloj.
+- **Codigos de recuperacion** (8, de un solo uso, ~48 bits cada uno) guardados como
+  **hash SHA-256**, nunca en claro. Sin ellos, perder el telefono seria perder la
+  cuenta para siempre.
+- **Sin QR externo.** El secreto se muestra una vez en base32 y como URI
+  `otpauth://` para teclearlo a mano: ningun servicio de terceros ve el secreto y no
+  hace falta anadir una libreria de generacion de QR.
+- **Alfabeto legible**: los codigos de recuperacion excluyen `I`, `L` y `O`.
+- Al activarse, `totpEnabled` pasa a `true` y el **login y la licencia
+  administrativa** empiezan a exigir el codigo. El campo `requiresTotp` de la
+  respuesta permite a la interfaz pedirlo sin revelar si la cuenta existe.
+- Un codigo incorrecto **cuenta como intento fallido** (7.4): probar codigos a ciegas
+  acaba bloqueando la cuenta.
+- `AUTH_SECRET` no interviene: el secreto TOTP vive en la base, cifrado en transito.
 
 ---
 
@@ -755,6 +795,32 @@ Cambios concretos, en el orden de implementacion (Fase 0 primero).
 - Los tokens emitidos antes del cambio **no** llevan `tv`: se tratan como
   `tv = 0` y se rechazan, forzando un nuevo login (efecto deseado: rotacion de
   sesiones al desplegar).
+
+### 8.8 Validacion por contenido real (magic bytes) — **implementado**
+
+La comprobacion anterior miraba la **extension** y el **MIME declarado**, y ambos
+los controla quien sube el archivo: bastaba con renombrar un ejecutable a `.jpg`
+para colarlo.
+
+`src/lib/file-signature.mjs` (modulo puro) lee la **firma binaria** y comprueba que
+el contenido coincide con lo declarado:
+
+| Tipo | Firma reconocida |
+|---|---|
+| JPEG | `FF D8 FF` |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` |
+| PDF | `%PDF-` |
+| WebP | contenedor `RIFF` **y** marca `WEBP` en el byte 8 (no basta `RIFF`: tambien lo usan WAV y AVI) |
+| TIFF | `II 2A 00` o `MM 00 2A` |
+| BMP | `42 4D` |
+| HEIC/HEIF | contenedor ISO-BMFF con marca `ftyp` |
+
+Se rechaza: contenido que no sea imagen ni PDF, extension que mienta sobre el
+contenido (`foto.jpg` que por dentro es un PDF) y MIME contradictorio. Los MIME
+genericos (`application/octet-stream`) se aceptan porque **el contenido ya manda**.
+
+Aplicado en `/api/member-files/upload` al archivo principal **y** al PDF adjunto del
+escaneo. Verificado con `tests/file-signature.test.mjs`.
 
 ---
 
@@ -926,6 +992,24 @@ resultado esperado:
 
 ---
 
+### 11.7 `tests/totp.test.mjs` — el nucleo criptografico
+
+Verifica la implementacion contra los **vectores oficiales del RFC 6238** (T=59,
+1111111109, 1111111111, 1234567890, 2000000000, 20000000000) y los del RFC 4648
+para base32. Ademas cubre: deriva del reloj (+-1 periodo), rechazo de entradas mal
+formadas, que el codigo de otro secreto no valga, la construccion del URI
+`otpauth://` (sin `+` en el emisor) y el ciclo completo de los codigos de
+recuperacion (generacion, hash, consumo unico).
+
+### 11.8 `tests/file-signature.test.mjs` — contenido real de las subidas
+
+Comprueba que un ejecutable renombrado a `.jpg`, un ZIP renombrado a `.pdf` y un
+script disfrazado de imagen se rechazan; que un `RIFF` de audio **no** se confunde
+con WebP; que la extension no puede mentir sobre el contenido; y que un MIME
+generico no bloquea una subida legitima.
+
+---
+
 ## 12) Plan de implementacion por fases
 
 Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
@@ -964,9 +1048,9 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | Paso | Entrega |
 |---|---|
 | 2.1 | `npm audit` + parcheo de las 2 criticas y 21 altas |
-| 2.2 | Validacion por magic bytes en las subidas |
+| 2.2 | Validacion por magic bytes en las subidas — **hecho** (`src/lib/file-signature.mjs`, seccion 8.8) |
 | 2.3 | Backups cifrados + prueba de restauracion documentada |
-| 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario |
+| 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
 | 2.5 | Purga por retencion (`scripts/purge-audit-log.mjs`) |
 | 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes |
 | 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros |
@@ -975,7 +1059,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 
 | Paso | Entrega |
 |---|---|
-| 3.1 | 2FA (TOTP) obligatorio para ADMIN |
+| 3.1 | 2FA (TOTP) obligatorio para ADMIN — **hecho** (seccion 7.6; disponible para todos los roles) |
 | 3.2 | Cloudflare WAF + Access delante de `/admin` |
 | 3.3 | Cifrado a nivel de columna para PII sensible |
 | 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion |
@@ -1018,7 +1102,8 @@ Se mantiene y se implementa **en serio**:
   revertir pagos, cambiar el financiamiento, gestionar usuarios y consultar la
   auditoria.
 - Rate limiting dedicado (3 intentos / 30 min) con bloqueo progresivo.
-- 2FA (TOTP) sobre la licencia en la Fase 3.
+- 2FA (TOTP) sobre la licencia — **implementado** (seccion 7.6): con el segundo
+  factor activo, la licencia filtrada por si sola ya no da acceso.
 - Se elimina `admin-direct-login`: el flujo unico es **login normal + licencia**.
 
 ### 13.4 El ADMIN puede leer la clave del miembro en claro

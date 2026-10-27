@@ -7,11 +7,15 @@ import {
 } from "@/lib/auth";
 import { getAdminSecurityConfig } from "@/lib/admin-config";
 import { recordAudit } from "@/lib/audit";
+import { prisma } from "@/lib/prisma";
 import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
+import { checkSecondFactor, SECOND_FACTOR_MESSAGE, TOTP_SELECT } from "@/lib/totp-service";
 
 type AdminPayload = {
   username?: string;
   license?: string;
+  /** Codigo del segundo factor: de la app autenticadora o de recuperacion. */
+  totpCode?: string;
 };
 
 export async function POST(request: Request) {
@@ -97,6 +101,59 @@ export async function POST(request: Request) {
       { ok: false, message: "Tu cuenta no tiene el rol administrativo requerido." },
       { status: 403 }
     );
+  }
+
+  // Segundo factor del administrador: con el 2FA activo, la licencia compartida
+  // deja de ser suficiente por si sola. Si alguien la filtra, sin el dispositivo
+  // del administrador no hay acceso (docs/SEGURIDAD_INTEGRAL.md 12.2).
+  const cuenta = await prisma.user.findUnique({
+    where: { id: session.user.userId },
+    select: TOTP_SELECT,
+  });
+
+  const factor = await checkSecondFactor(cuenta, body.totpCode);
+
+  if (!factor.ok) {
+    await recordAudit({
+      action: "TOTP_CHALLENGE_FAILED",
+      actor: {
+        userId: session.user.userId,
+        email: session.user.email,
+        role: session.user.role,
+      },
+      targetType: "User",
+      targetId: session.user.userId,
+      metadata: { paso: "licencia", motivo: factor.reason },
+      success: false,
+      request,
+    });
+
+    return NextResponse.json(
+      {
+        ok: false,
+        requiresTotp: true,
+        message:
+          factor.reason === "missing"
+            ? "Ingresa el código de 6 dígitos de tu app autenticadora."
+            : SECOND_FACTOR_MESSAGE,
+      },
+      { status: 401 },
+    );
+  }
+
+  if (factor.viaRecovery) {
+    await recordAudit({
+      action: "RECOVERY_CODE_USED",
+      actor: {
+        userId: session.user.userId,
+        email: session.user.email,
+        role: session.user.role,
+      },
+      targetType: "User",
+      targetId: session.user.userId,
+      metadata: { paso: "licencia" },
+      request,
+    });
   }
 
   const response = NextResponse.json({

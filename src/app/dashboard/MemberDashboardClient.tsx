@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
+import SeguridadView from "./SeguridadView";
 import {
   AlertTriangle,
   Bell,
@@ -186,6 +187,9 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
   const [adminLicense, setAdminLicense] = useState("");
+  // Segundo factor del administrador: se pide tras validar usuario y licencia.
+  const [adminTotpCode, setAdminTotpCode] = useState("");
+  const [needsAdminTotp, setNeedsAdminTotp] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminMessage, setAdminMessage] = useState("");
   const [sessionStatus, setSessionStatus] = useState<SessionStatusApi | null>(null);
@@ -253,12 +257,20 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
         body: JSON.stringify({
           username: adminUsername,
           license: adminLicense,
+          totpCode: adminTotpCode,
         }),
       });
 
-      const result = (await response.json()) as { ok?: boolean; message?: string };
+      const result = (await response.json()) as {
+        ok?: boolean;
+        message?: string;
+        requiresTotp?: boolean;
+      };
 
       if (!response.ok || !result.ok) {
+        // Con el 2FA activo, la licencia sola no basta: se pide el codigo.
+        if (result.requiresTotp) setNeedsAdminTotp(true);
+
         setAdminMessage(result.message ?? "No se pudo validar el acceso de administrador.");
         return;
       }
@@ -1023,6 +1035,10 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
                           Acceso administrador
                         </button>
                       </article>
+
+                      <div className="md:col-span-2">
+                        <SeguridadView />
+                      </div>
                     </div>
                   )}
                 </>
@@ -1174,6 +1190,32 @@ export default function MemberDashboardClient({ user }: { user: MemberUser }) {
                   className="h-10 w-full rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-500"
                 />
               </div>
+
+              {needsAdminTotp ? (
+                <div>
+                  <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                    Código de verificación
+                  </label>
+                  <input
+                    value={adminTotpCode}
+                    onChange={(event) =>
+                      setAdminTotpCode(
+                        event.target.value
+                          .toUpperCase()
+                          .replace(/[^A-Z0-9]/g, "")
+                          .slice(0, 14),
+                      )
+                    }
+                    placeholder="123456"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    className="h-10 w-full rounded-lg border border-zinc-300 px-3 text-center font-mono text-base tracking-[0.3em] outline-none focus:border-zinc-500"
+                  />
+                  <p className="mt-1 text-xs text-zinc-500">
+                    De tu app autenticadora, o uno de tus códigos de recuperación.
+                  </p>
+                </div>
+              ) : null}
 
               {sessionStatus?.adminTotalAccess ? (
                 <p className="text-xs text-emerald-700">Tu sesión ya tiene acceso administrativo.</p>

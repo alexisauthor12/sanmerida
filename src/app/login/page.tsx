@@ -17,6 +17,10 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [recoveryMessage, setRecoveryMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  // Segundo factor: solo se pide cuando el servidor lo exige, para no confundir a
+  // quien no lo tiene activo.
+  const [needsTotp, setNeedsTotp] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -33,16 +37,19 @@ export default function LoginPage() {
       const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, portal: "account" }),
+        body: JSON.stringify({ email, password, totpCode, portal: "account" }),
       });
 
       const data = (await response.json()) as {
         ok: boolean;
         message: string;
         redirectTo?: string;
+        requiresTotp?: boolean;
       };
 
       if (!response.ok || !data.ok) {
+        if (data.requiresTotp) setNeedsTotp(true);
+
         if (data.redirectTo) {
           setError(data.message || "Te estamos redirigiendo al portal correcto.");
           setTimeout(() => {
@@ -112,6 +119,31 @@ export default function LoginPage() {
               required
               className="w-full rounded-xl border border-white/15 bg-black/45 px-4 py-3 text-white placeholder:text-white/35 outline-none transition focus:border-white/30"
             />
+
+            {needsTotp ? (
+              <div className="space-y-2">
+                <input
+                  value={totpCode}
+                  onChange={(event) =>
+                    setTotpCode(
+                      event.target.value
+                        .toUpperCase()
+                        .replace(/[^A-Z0-9]/g, "")
+                        .slice(0, 14),
+                    )
+                  }
+                  placeholder="Código de 6 dígitos"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  className="w-full rounded-xl border border-cyan-300/40 bg-black/45 px-4 py-3 text-center font-mono text-lg tracking-[0.3em] text-white placeholder:text-white/35 outline-none transition focus:border-cyan-200/70"
+                />
+                <p className="text-xs text-white/60">
+                  Ábrelo en tu app autenticadora. Si perdiste el teléfono, escribe uno de tus
+                  códigos de recuperación.
+                </p>
+              </div>
+            ) : null}
 
             <div className="pt-1">
               <div className="flex flex-wrap items-center justify-between gap-3">
