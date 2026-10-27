@@ -137,8 +137,9 @@ export default function Home() {
   const [catalogVideoOpen, setCatalogVideoOpen] = useState<{ titulo: string; src: string } | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [adminModalOpen, setAdminModalOpen] = useState(false);
-  const [adminUsername, setAdminUsername] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
   const [adminLicense, setAdminLicense] = useState("");
   const [adminTotpCode, setAdminTotpCode] = useState("");
   const [needsAdminTotp, setNeedsAdminTotp] = useState(false);
@@ -375,8 +376,8 @@ export default function Home() {
   };
 
   const handleAdminDirectLogin = async () => {
-    if (!adminUsername.trim() || !adminPassword) {
-      setAdminMessage("Ingresa tu usuario y tu contraseña.");
+    if (!adminEmail.trim() || !adminPassword) {
+      setAdminMessage("Ingresa el correo y la contraseña de tu cuenta admin.");
       return;
     }
 
@@ -384,7 +385,11 @@ export default function Home() {
     setAdminMessage("");
 
     try {
-      // 1) Sesión normal, con usuario y contraseña.
+      // 1) Sesión normal, con **correo** y contraseña.
+      //
+      // El portal de cuenta identifica por correo (`email`), no por usuario: mandar
+      // `username` aqui responde 400 "Completa correo y contrasena". El usuario admin
+      // solo se usa en el paso siguiente, el de la licencia.
       //
       // Antes esta pantalla llamaba a `/api/auth/admin-direct-login`, que entraba con
       // usuario + licencia y **sin contraseña**. Esa ruta se eliminó por ser un agujero
@@ -395,7 +400,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: adminUsername.trim(),
+          email: adminEmail.trim(),
           password: adminPassword,
           totpCode: adminTotpCode.trim() || undefined,
           portal: "account",
@@ -422,8 +427,8 @@ export default function Home() {
       }
 
       // 2) La licencia es el step-up: exige la sesión de arriba y el rol ADMIN.
-      if (!adminLicense.trim()) {
-        setAdminMessage("Sesión iniciada. Ahora ingresa la licencia administrativa.");
+      if (!adminUsername.trim() || !adminLicense.trim()) {
+        setAdminMessage("Sesión iniciada. Ahora ingresa el usuario admin y la licencia.");
         return;
       }
 
@@ -582,7 +587,8 @@ export default function Home() {
                     <p className="text-xs uppercase tracking-[0.2em] text-emerald-300">Acceso seguro</p>
                     <h3 className="mt-2 text-2xl font-light tracking-[0.05em] text-white">Acceso Admin</h3>
                     <p className="mt-2 text-sm text-white/70">
-                      Entra con tu usuario y contraseña, y confirma con la licencia administrativa.
+                      Entra con el correo y la contraseña de tu cuenta, y confirma con el usuario
+                      y la licencia administrativa.
                     </p>
                   </div>
                   <button
@@ -596,14 +602,14 @@ export default function Home() {
 
                 <div className="space-y-3">
                   <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Usuario admin</label>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Correo de tu cuenta</label>
                     <input
-                      value={adminUsername}
-                      onChange={(event) => setAdminUsername(event.target.value)}
-                      type="text"
+                      value={adminEmail}
+                      onChange={(event) => setAdminEmail(event.target.value)}
+                      type="email"
                       autoComplete="username"
                       className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-emerald-300/60"
-                      placeholder="Ingresa tu usuario admin"
+                      placeholder="tu@correo.com"
                     />
                   </div>
 
@@ -616,6 +622,18 @@ export default function Home() {
                       autoComplete="current-password"
                       className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-emerald-300/60"
                       placeholder="Ingresa tu contraseña"
+                    />
+                  </div>
+
+                  <div className="border-t border-white/10 pt-3">
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-white/70">Usuario admin</label>
+                    <input
+                      value={adminUsername}
+                      onChange={(event) => setAdminUsername(event.target.value)}
+                      type="text"
+                      autoComplete="off"
+                      className="h-11 w-full rounded-xl border border-white/20 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-emerald-300/60"
+                      placeholder="Tu usuario de administrador"
                     />
                   </div>
 

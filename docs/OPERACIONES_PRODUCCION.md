@@ -778,7 +778,55 @@ sitio seguro y no la dejes en el equipo.
 | `MEMBER_KEY_ENCRYPTION_SECRET` | Secreto de las credenciales de miembros (seccion 9.2) |
 | `LOCAL_DATABASE_URL` | Postgres local, solo para los scripts de migracion |
 
-## 10) Procedimiento de incidentes de seguridad
+### 9.15 El parche de OpenNext en Windows (si Prisma falla en producción)
+
+**Síntoma:** el login (y cualquier consulta a la base) devuelve **500** con el mensaje
+«No fue posible validar credenciales en este momento. Verifica DATABASE_URL». En los logs
+del Worker (`wrangler tail`) aparece:
+
+```
+"prisma:error"  ->  "[unenv] fs.readFileSync is not implemented yet!"
+```
+
+**Qué pasa.** OpenNext transforma el `package.json` de los paquetes con condición `workerd`
+(entre ellos `.prisma/client`) para que el Worker use el motor WASM en vez del runtime de
+Node. **En Windows** el nombre de paquete que captura usa barras invertidas (`.prisma\client`)
+y no coincide con `serverExternalPackages` (`.prisma/client`), así que el transform **se
+salta**. Sin transform, el cliente generado intenta leer el compilador WASM del disco:
+
+```js
+const queryCompilerWasmFileBytes = require('fs').readFileSync(queryCompilerWasmFilePath)
+```
+
+Y en un Worker `fs.readFileSync` no existe.
+
+**El arreglo ya está en el repositorio**: `scripts/patch-opennext-workerd.mjs` normaliza los
+separadores. Es idempotente.
+
+**Por qué puede volver a fallar, y cómo se evita ahora.** El parche se aplica sobre
+`node_modules`, así que **cualquier reinstalación de `@opennextjs/cloudflare` lo borra** —
+y pasó: una actualización de 1.18.1 a 1.20.13 se llevó el parche por delante y el login
+estuvo caído sin que nada lo avisara. Por eso:
+
+1. El parche corre en `postinstall` **y también al principio de `build:cf`**: cada
+   despliegue lo vuelve a aplicar.
+2. `@opennextjs/cloudflare` está **fijado a una versión exacta** en `package.json`, para que
+   no se actualice solo.
+
+**Comprobación rápida** (antes de dar un despliegue por bueno):
+
+```powershell
+# 1. El parche esta puesto
+Select-String -Path node_modules/@opennextjs/cloudflare/dist/cli/build/utils/workerd.js -Pattern 'matchedPkg' | Select-Object -First 1
+
+# 2. El login hace una consulta de verdad: debe dar 401, NUNCA 500
+curl.exe -s -X POST https://sanmeridajz.com/api/auth/login -H "content-type: application/json" -d "{\"email\":\"no-existe@example.com\",\"password\":\"x\",\"portal\":\"account\"}" -w "`n%{http_code}`n"
+```
+
+> Un `401` significa «consulté la base y no hay tal usuario»: la base funciona.
+> Un `500` significa que Prisma no pudo hablar con ella. Es la comprobación más rápida
+> que existe para saber si el acceso está roto.
+
 
 > Cierra el paso **2.6** de `docs/SEGURIDAD_INTEGRAL.md`. El objetivo no es tener un
 > documento: es que **la primera hora no se improvise**. Quien detecta algo abre aqui y

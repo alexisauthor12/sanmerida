@@ -299,6 +299,40 @@ await comprobar(19, "Los errores no filtran detalles internos", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 20. La base de datos responde de verdad (una consulta real, no solo validaciones)
+// ---------------------------------------------------------------------------
+
+await comprobar(20, "El login consulta la base de datos (401, nunca 500)", async () => {
+  // Este caso nace de una caida real. Al actualizarse `@opennextjs/cloudflare` se perdio
+  // el parche de Windows que hace que Prisma use el motor WASM dentro del Worker. A
+  // partir de ahi el cliente generado intentaba leer el compilador del disco
+  // (`fs.readFileSync`, que no existe en un Worker) y **todas** las consultas fallaban:
+  // el login devolvia 500 y nadie podia entrar.
+  //
+  // Los otros 19 casos no lo detectaron porque **ninguno toca la base**: todos cortan
+  // antes, en la autorizacion o en la validacion. Este es el unico que obliga a que haya
+  // una consulta de verdad. Un 401 significa "consulte y no hay tal usuario"; un 500
+  // significa que Prisma no puede hablar con la base.
+  const respuesta = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: `no-existe-${Date.now()}@example.com`,
+      password: "contrasena-que-no-sirve",
+      portal: "account",
+    }),
+  });
+
+  return {
+    ok: respuesta.status === 401,
+    detalle:
+      respuesta.status === 401
+        ? "401: la base respondio"
+        : `${respuesta.status} (se esperaba 401; un 500 significa que Prisma no habla con la base)`,
+  };
+});
+
+// ---------------------------------------------------------------------------
 // Informe
 // ---------------------------------------------------------------------------
 
