@@ -50,7 +50,11 @@ function getDevelopmentFallbackUser(params: {
   email: string;
   credential: string;
 }): SessionUser | null {
-  if (process.env.NODE_ENV === "production") {
+  // Blindaje fail-closed: las cuentas de prueba solo existen con
+  // `NODE_ENV === "development"`. Antes bastaba con que NODE_ENV no fuera
+  // "production", asi que un despliegue sin NODE_ENV definido dejaba activas
+  // estas credenciales conocidas cuando la base de datos fallaba.
+  if (process.env.NODE_ENV !== "development") {
     return null;
   }
 

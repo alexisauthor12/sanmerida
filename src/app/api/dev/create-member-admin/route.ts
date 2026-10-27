@@ -12,10 +12,22 @@ type Payload = {
   memberKey?: string; // plaintext that will be hashed as passwordHash
 };
 
+/**
+ * Blindaje fail-closed: la ruta SOLO existe en desarrollo.
+ *
+ * Antes se comprobaba `NODE_ENV === "production"` (fail-open): un despliegue con
+ * `NODE_ENV` sin definir dejaba este endpoint abierto y permitia crear cuentas
+ * de miembro con credenciales conocidas. Ahora solo se habilita cuando
+ * `NODE_ENV === "development"` y en cualquier otro caso responde 404, como si la
+ * ruta no existiera (no revela que existe).
+ */
+function isDevRouteEnabled() {
+  return process.env.NODE_ENV === "development";
+}
+
 export async function POST(request: Request) {
-  // Dev safeguard: only allow in non-production environments
-  if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ ok: false, message: "No disponible en producción" }, { status: 403 });
+  if (!isDevRouteEnabled()) {
+    return NextResponse.json({ ok: false, message: "Recurso no encontrado." }, { status: 404 });
   }
 
   const body = (await request.json()) as Payload;
