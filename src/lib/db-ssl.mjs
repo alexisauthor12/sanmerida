@@ -23,11 +23,31 @@
  * Sin ninguna de esas variables se **valida**, y si falla el mensaje explica como
  * arreglarlo. Nunca se degrada a "sin verificar" en silencio.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const CA_ENV = "DATABASE_CA_CERT";
 export const NO_VERIFY_ENV = "DATABASE_SSL_NO_VERIFY";
 export const EXTRA_CA_ENV = "NODE_EXTRA_CA_CERTS";
+
+/**
+ * CA raiz del proyecto, **incluida en el repositorio**.
+ *
+ * No es un secreto: es un certificado publico (el "Supabase Root 2021 CA"), el mismo
+ * que Supabase indica descargar en *Database settings → SSL configuration*. Se incluye
+ * para que la validacion funcione sin que nadie tenga que configurar nada.
+ *
+ * Se extrajo de la propia cadena del pooler (leaf → intermedio → raiz autofirmada).
+ * Valido hasta abril de 2031.
+ */
+export const BUNDLED_CA_PATH = fileURLToPath(
+  new URL("../../certs/supabase-ca.crt", import.meta.url),
+);
+
+/** ¿La URL apunta a Supabase (pooler o conexion directa)? */
+export function isSupabaseDatabase(url) {
+  return /\.pooler\.supabase\.com|\.supabase\.co/i.test(String(url ?? ""));
+}
 
 /** ¿La URL apunta al Postgres local de desarrollo? */
 export function isLocalDatabase(url) {
@@ -44,7 +64,7 @@ function activado(valor) {
  *
  * @param {string} url
  * @param {Record<string, string | undefined>} [env]
- * @returns {{ modo: "local" | "ca" | "extra-ca" | "validar" | "sin-verificar", caPath: string, motivo: string }}
+ * @returns {{ modo: "local" | "ca" | "proyecto" | "extra-ca" | "validar" | "sin-verificar", caPath: string, motivo: string }}
  */
 export function resolveDbSslMode(url, env = {}) {
   if (isLocalDatabase(url)) {
@@ -72,6 +92,17 @@ export function resolveDbSslMode(url, env = {}) {
   if (extraCa) {
     // Node ya lo carga solo: no hay que pasar nada al driver.
     return { modo: "extra-ca", caPath: extraCa, motivo: `${EXTRA_CA_ENV} definido` };
+  }
+
+  // CA del proyecto incluida en el repositorio. Solo se aplica a Supabase: contra otro
+  // proveedor (Neon, RDS...) su certificado publico ya valida con la CA del sistema, y
+  // forzar la de Supabase lo romperia.
+  if (isSupabaseDatabase(url) && existsSync(BUNDLED_CA_PATH)) {
+    return {
+      modo: "proyecto",
+      caPath: BUNDLED_CA_PATH,
+      motivo: "CA del proyecto incluida en el repositorio",
+    };
   }
 
   return { modo: "validar", caPath: "", motivo: "sin CA del proyecto: se valida contra la CA del sistema" };
@@ -149,7 +180,8 @@ export function buildDbSsl(url, env = {}, leerArchivo) {
     };
   }
 
-  if (resolucion.modo === "ca") {
+  // "ca" y "proyecto" (CA incluida en el repositorio): se le pasa el certificado.
+  if (resolucion.modo === "ca" || resolucion.modo === "proyecto") {
     const leer = leerArchivo ?? ((ruta) => readFileSync(ruta, "utf8"));
 
     return {
@@ -168,9 +200,9 @@ let notaYaMostrada = false;
 
 /** Nota de una linea que se muestra cuando no hay CA configurada. */
 export const NOTE_NO_CA =
-  `[tls] Sin ${CA_ENV}: se validará el certificado del servidor. Si falla, descarga la CA ` +
-  `del proyecto (Supabase → Database settings → SSL configuration) y define ` +
-  `${CA_ENV}=/ruta/certificado.crt — ver docs/OPERACIONES_PRODUCCION.md §9.9.`;
+  `[tls] Sin ${CA_ENV}: se validará el certificado del servidor con la CA del sistema. ` +
+  `Si falla, define ${CA_ENV} con la CA de tu proveedor — ver ` +
+  `docs/OPERACIONES_PRODUCCION.md §9.9.`;
 
 /**
  * Atajo para los scripts: devuelve solo la opcion `ssl` y explica (una vez por

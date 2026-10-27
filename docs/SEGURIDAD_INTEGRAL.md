@@ -950,10 +950,18 @@ silencio**:
 
 | Modo | Como se activa | Que hace |
 |---|---|---|
-| `ca` | `DATABASE_CA_CERT=/ruta/raiz.crt` | **Lo correcto**: valida contra la CA del proyecto |
-| `extra-ca` | `NODE_EXTRA_CA_CERTS=/ruta/raiz.crt` | Igual, resuelto por Node |
-| `validar` | (por defecto) | Valida contra la CA del sistema; si no puede, **falla** con la pista de como arreglarlo |
 | `sin-verificar` | `DATABASE_SSL_NO_VERIFY=1` | Cifra sin verificar: acto deliberado y **avisado en pantalla** |
+| `ca` | `DATABASE_CA_CERT=/ruta/raiz.crt` | Valida contra esa CA |
+| `extra-ca` | `NODE_EXTRA_CA_CERTS=/ruta/raiz.crt` | Igual, resuelto por Node |
+| `proyecto` | (por defecto con Supabase) | **CA raiz incluida en `certs/supabase-ca.crt`** |
+| `validar` | (otros proveedores) | Valida contra la CA del sistema |
+
+La CA incluida se **extrapo de la propia cadena del pooler**, no se copio de ningun sitio:
+`*.pooler.supabase.com` → `Supabase Intermediate 2021 CA` → `Supabase Root 2021 CA`
+(autofirmada, valida hasta abril de 2031). Es un certificado publico, el mismo que Supabase
+indica descargar. Resultado: **los scripts validan el certificado sin configurar nada**, y
+lo verifique ejecutando `check-storage-integrity.mjs` contra produccion.
+
 
 El modo `sin-verificar` existe a proposito. La alternativa (fallar siempre) empuja a la
 gente a borrar la comprobacion a mano —que es exactamente como nacio el hallazgo F— o a

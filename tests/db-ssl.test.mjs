@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CA_ENV,
+  BUNDLED_CA_PATH,
   CERTIFICATE_HINT,
   EXTRA_CA_ENV,
   NO_VERIFY_ENV,
@@ -10,12 +11,15 @@ import {
   dbSslFor,
   isCertificateError,
   isLocalDatabase,
+  isSupabaseDatabase,
   resolveDbSslMode,
   sslWarning,
 } from "../src/lib/db-ssl.mjs";
 
 const REMOTA = "postgresql://postgres.x:secreta@aws-1-us-east-1.pooler.supabase.com:6543/postgres";
 const LOCAL = "postgresql://postgres:localdev@127.0.0.1:5432/sanmerida";
+/** Otro proveedor: su certificado es publico y valida con la CA del sistema. */
+const OTRO_PROVEEDOR = "postgresql://usuario:secreta@ep-cool-1234.us-east-2.aws.neon.tech:5432/neondb";
 
 test("reconoce el Postgres local", () => {
   assert.equal(isLocalDatabase(LOCAL), true);
@@ -25,11 +29,47 @@ test("reconoce el Postgres local", () => {
 });
 
 test("sin configuracion se VALIDA, no se desactiva la validacion", () => {
-  const { ssl, aviso, modo } = buildDbSsl(REMOTA, {});
+  const { ssl, aviso, modo } = buildDbSsl(OTRO_PROVEEDOR, {});
 
   assert.equal(modo, "validar");
   assert.deepEqual(ssl, { rejectUnauthorized: true });
   assert.equal(aviso, null);
+});
+
+test("contra Supabase usa la CA incluida en el repositorio, sin configurar nada", () => {
+  const { ssl, aviso, modo } = buildDbSsl(REMOTA, {});
+
+  assert.equal(modo, "proyecto");
+  assert.equal(ssl.rejectUnauthorized, true);
+  assert.match(ssl.ca, /BEGIN CERTIFICATE/);
+  assert.equal(aviso, null);
+});
+
+test("la CA incluida es un certificado real", async () => {
+  const { readFileSync } = await import("node:fs");
+
+  const pem = readFileSync(BUNDLED_CA_PATH, "utf8");
+
+  assert.match(pem, /^-----BEGIN CERTIFICATE-----/);
+  assert.match(pem, /-----END CERTIFICATE-----\s*$/);
+  assert.ok(pem.length > 800, "un certificado raiz no puede ser tan corto");
+});
+
+test("reconoce Supabase y no confunde a otros proveedores", () => {
+  assert.equal(isSupabaseDatabase(REMOTA), true);
+  assert.equal(isSupabaseDatabase("postgresql://x@db.abcdefg.supabase.co:5432/postgres"), true);
+  assert.equal(isSupabaseDatabase(OTRO_PROVEEDOR), false);
+  assert.equal(isSupabaseDatabase(LOCAL), false);
+  assert.equal(isSupabaseDatabase(undefined), false);
+});
+
+test("la CA del repositorio NO se aplica a otros proveedores", () => {
+  // Neon, RDS, etc. usan CAs publicas: forzar la de Supabase los romperia.
+  assert.equal(resolveDbSslMode(OTRO_PROVEEDOR, {}).modo, "validar");
+});
+
+test("DATABASE_CA_CERT tiene prioridad sobre la CA incluida", () => {
+  assert.equal(resolveDbSslMode(REMOTA, { [CA_ENV]: "otra.crt" }).modo, "ca");
 });
 
 test("el Postgres local no usa TLS", () => {
@@ -95,7 +135,11 @@ test("solo los valores afirmativos desactivan la validacion", () => {
 
   // Un "0" o una cadena vacia NO desactivan: hay que ser explicito.
   for (const valor of ["0", "false", "", "no", "  ", undefined]) {
-    assert.equal(resolveDbSslMode(REMOTA, { [NO_VERIFY_ENV]: valor }).modo, "validar", String(valor));
+    assert.equal(
+      resolveDbSslMode(OTRO_PROVEEDOR, { [NO_VERIFY_ENV]: valor }).modo,
+      "validar",
+      String(valor),
+    );
   }
 });
 
@@ -103,6 +147,7 @@ test("sslWarning solo avisa en el modo sin verificar", () => {
   assert.equal(sslWarning("validar"), null);
   assert.equal(sslWarning("local"), null);
   assert.equal(sslWarning("ca"), null);
+  assert.equal(sslWarning("proyecto"), null);
   assert.equal(sslWarning("extra-ca"), null);
   assert.ok(sslWarning("sin-verificar"));
 });
@@ -131,13 +176,17 @@ test("la nota de 'sin CA' es una linea accionable", () => {
 test("dbSslFor devuelve solo la opcion ssl y no revienta", () => {
   const ssl = dbSslFor(REMOTA, {});
 
-  assert.deepEqual(ssl, { rejectUnauthorized: true });
+  assert.equal(ssl.rejectUnauthorized, true);
+  assert.match(ssl.ca, /BEGIN CERTIFICATE/);
   assert.equal(dbSslFor(LOCAL, {}), undefined);
 });
 
 test("dbSslFor usa process.env por defecto", () => {
-  // Sin DATABASE_SSL_NO_VERIFY en el entorno real, valida.
-  assert.deepEqual(dbSslFor(REMOTA), { rejectUnauthorized: true });
+  // Sin DATABASE_SSL_NO_VERIFY en el entorno real, valida con la CA incluida.
+  const ssl = dbSslFor(REMOTA);
+
+  assert.equal(ssl.rejectUnauthorized, true);
+  assert.ok(ssl.ca, "debe llevar la CA incluida");
 });
 
 test("no hay ningun script con la validacion desactivada a mano", async () => {

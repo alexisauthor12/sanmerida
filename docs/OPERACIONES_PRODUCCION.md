@@ -16,9 +16,9 @@ NODE_ENV="production"
 ```
 
 Notas:
-- `DATABASE_URL` debe apuntar a Postgres productivo con TLS según proveedor. Con Supabase,
-  define ademas `DATABASE_CA_CERT` (seccion 9.9): su pooler **no** valida contra la CA de
-  Node, y sin ese archivo los scripts fallan al conectar.
+- `DATABASE_URL` debe apuntar a Postgres productivo con TLS según proveedor. Con Supabase no
+  hay que configurar nada más: los scripts validan su certificado con la CA incluida en
+  `certs/supabase-ca.crt` (seccion 9.9).
 - `ADMIN_LICENSE_HASH` debe ser bcrypt valido (`$2a$`, `$2b$`, `$2y$`).
 - Rota `AUTH_SECRET` y `ADMIN_LICENSE_HASH` ante incidentes o cambios de personal.
 - `AUTH_SECRET` firma las sesiones (JWT) y ademas deriva la clave AES-256-GCM con
@@ -573,52 +573,56 @@ Cuando este activo, anotarlo aqui con la fecha.
 
 ### 9.9 Validacion TLS en los scripts
 
-Los scripts que hablan con Postgres usan `src/lib/db-ssl.mjs`. **Nunca escribas
-`rejectUnauthorized: false` a mano**: `tests/db-ssl.test.mjs` tiene un guardian que falla
-si vuelve a aparecer en `scripts/`.
+**No hay nada que configurar: ya funciona.** Los scripts que hablan con Postgres usan
+`src/lib/db-ssl.mjs` y validan el certificado del servidor contra `certs/supabase-ca.crt`,
+la CA raiz del proyecto, **incluida en el repositorio**.
 
-**Por que no basta con `rejectUnauthorized: true`.** El pooler de Supabase presenta un
-certificado autofirmado en la cadena, asi que `pg` no puede validarlo contra la lista de CAs
-de Node:
+**Por que hacia falta ese archivo.** El pooler de Supabase usa su **propia PKI** (no una CA
+publica), asi que `pg` no puede validarlo contra la lista de CAs de Node:
 
 ```
 Error: self-signed certificate in certificate chain
   code: 'SELF_SIGNED_CERT_IN_CHAIN'
 ```
 
-Es del endpoint, no de tu red (GitHub, npm y supabase.com validan bien desde el mismo
-equipo). La documentacion de Supabase lo dice: `sslmode=require` cifra pero **no verifica**;
-para verificar hay que darle la CA del proyecto.
+La cadena real, extraida de la conexion:
 
-**Arreglo correcto (una sola vez):**
+| Nivel | Certificado | Emisor | Valido hasta |
+|---|---|---|---|
+| 0 | `*.pooler.supabase.com` | Supabase Intermediate 2021 CA | mar 2030 |
+| 1 | Supabase Intermediate 2021 CA | Supabase Root 2021 CA | oct 2033 |
+| 2 | **Supabase Root 2021 CA** | el mismo (autofirmado) | abr 2031 |
 
-1. Supabase → *Database settings* → *SSL configuration* → descargar el certificado.
-2. Guardarlo **fuera del repositorio** (por ejemplo `D:\certs\supabase-raiz.crt`).
-3. Definirlo en el entorno antes de ejecutar los scripts:
+No era un proxy de la red: desde el mismo equipo, GitHub, npm y supabase.com validan sin
+problema. La documentacion de Supabase lo confirma: `sslmode=require` cifra pero **no
+verifica**, y para verificar hay que apuntar el driver a su CA raiz.
 
-```powershell
-$env:DATABASE_CA_CERT = "D:\certs\supabase-raiz.crt"
-node scripts/backup-documents.mjs
-```
+**El certificado no es un secreto**: es publico, el mismo que Supabase indica descargar en
+*Database settings → SSL configuration*. Se incluye en `certs/` para que nadie tenga que
+hacerlo a mano. Si Supabase lo rota o vence, se sustituye el archivo y listo.
 
-Alternativa equivalente, a nivel de Node: `$env:NODE_EXTRA_CA_CERTS = "D:\certs\..."`.
+**Como se resuelve el modo TLS**, por orden de prioridad:
 
-**Si no se puede conseguir la CA**, queda la salida de emergencia, que es un acto
-deliberado y **avisa en pantalla cada vez que se usa**:
+| Prioridad | Como | Que hace |
+|---|---|---|
+| 1 | `DATABASE_SSL_NO_VERIFY=1` | Cifra **sin verificar**: acto deliberado, avisa en pantalla |
+| 2 | `DATABASE_CA_CERT=/ruta.crt` | Valida contra esa CA |
+| 3 | `NODE_EXTRA_CA_CERTS=/ruta.crt` | Igual, pero resuelto por Node |
+| 4 | (Supabase, por defecto) | **CA incluida en `certs/supabase-ca.crt`** |
+| 5 | (otros proveedores) | Valida con la CA del sistema |
 
-```powershell
-$env:DATABASE_SSL_NO_VERIFY = "1"
-node scripts/backup-documents.mjs
-```
+La CA del repositorio **solo se aplica a Supabase**: contra Neon, RDS u otro proveedor su
+certificado publico ya valida con la CA del sistema, y forzar la de Supabase lo romperia.
 
-Cifra sin verificar. Es lo mismo que hace `sslmode=require`, y es peor que validar, pero es
-**mucho mejor que dejar de hacer respaldos** o que borrar la comprobacion del codigo.
+**Nunca escribas `rejectUnauthorized: false` a mano** en un script:
+`tests/db-ssl.test.mjs` tiene un guardian que falla si vuelve a aparecer en `scripts/`.
+
 
 ### 9.10 Variables de entorno de los scripts
 
 | Variable | Para que |
 |---|---|
-| `DATABASE_CA_CERT` | Ruta al certificado raiz del proyecto (recomendado, seccion 9.9) |
+| `DATABASE_CA_CERT` | Ruta a una CA concreta. **Normalmente no hace falta**: la CA del proyecto ya esta en `certs/supabase-ca.crt` (seccion 9.9) |
 | `NODE_EXTRA_CA_CERTS` | Lo mismo, resuelto por Node |
 | `DATABASE_SSL_NO_VERIFY` | `1` = cifra sin verificar (salida de emergencia, avisa) |
 | `BACKUP_PASSPHRASE` | Contrasena del respaldo cifrado (>= 16 caracteres, seccion 8.1) |
