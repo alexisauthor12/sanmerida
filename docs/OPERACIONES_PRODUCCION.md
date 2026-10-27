@@ -549,6 +549,11 @@ Esta es la unica capa que no se puede versionar en el repositorio: se configura 
 el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
 (rol + licencia + 2FA), que ya esta endurecida.
 
+> **Requisito previo: tener un dominio propio apuntando al Worker.** El WAF y el Access
+> se aplican sobre un hostname, y hoy la app solo responde en la URL de `workers.dev`,
+> que no los admite en el plan gratuito. Ver 9.10 para comprobarlo y para poner el
+> dominio. Mientras tanto, este runbook no se puede aplicar.
+
 **WAF (gratuito en el plan Free):**
 
 1. Panel de Cloudflare -> *Security* -> *WAF* -> *Custom rules*.
@@ -562,7 +567,7 @@ el panel de Cloudflare. Mientras no este puesta, `/admin` depende solo de la app
 **Cloudflare Access (Zero Trust):**
 
 1. *Zero Trust* -> *Access* -> *Applications* -> *Add an application* -> *Self-hosted*.
-2. Aplicacion sobre `sanmerida.com/admin` (y `/admin/*`).
+2. Aplicacion sobre `TU-DOMINIO/admin` (y `/admin/*`).
 3. Politica: *Allow* solo para los correos del equipo administrativo.
 4. Metodo de identidad: One-time PIN por correo (no exige IdP externo) o Google.
 5. Session duration: 8 horas.
@@ -621,37 +626,51 @@ certificado publico ya valida con la CA del sistema, y forzar la de Supabase lo 
 ### 9.10 Comprobar que el dominio sirve de verdad la aplicación
 
 **Antes de dar un despliegue por bueno, hay que confirmar que el dominio apunta al
-Worker.** El 27/10/2026 se comprobó que `www.sanmerida.com` **no** sirve este proyecto:
+Worker.** Comprobado el 27/10/2026: **la aplicación solo se sirve en la URL de
+`workers.dev`. No hay ningún dominio propio apuntándole.**
 
-```
-$ curl.exe -s -D - -o NUL https://www.sanmerida.com/
-HTTP/1.1 200 OK
-Server: nginx                 <-- NO es un Worker
+| Objetivo probado | DNS | Estado | `Server` | ¿Es la app? |
+|---|---|---|---|---|
+| `sanmerida.com` | A `50.112.96.208` | 301 → www | nginx | **No** |
+| `www.sanmerida.com` | A `50.112.96.169` (CNAME a `sites.apts247.info`) | 200 | nginx | **No** |
+| `app` / `admin` / `panel` / `portal` / `clientes` / `dashboard` / `sistema` / `motos` / `staff` / `dev` / `staging` / `test` / `api` **.sanmerida.com** | no resuelven | — | — | No |
+| `sanmerida.com.ve`, `www.sanmerida.com.ve`, `sanmerida.ve` | no resuelven | — | — | No |
+| `sanmeridamotos.com`, `motossanmerida.com`, `sanmeridaca.com` | no resuelven | — | — | No |
+| `sanmerida-com.pages.dev` | no responde | — | — | No (no hay proyecto Pages) |
+| Supabase Edge Function `/functions/v1/api` | — | 404 | cloudflare | No (`NOT_FOUND`) |
+| **`sanmerida-com.alexruizrondon.workers.dev`** | Cloudflare | 200 | cloudflare | **SÍ** |
 
-$ Resolve-DnsName sanmerida.com -Type NS
-ns-1521.awsdns-62.org         <-- Route 53, no Cloudflare
-$ Resolve-DnsName www.sanmerida.com -Type CNAME
-sites.apts247.info            <-- otro sitio, sin relación
-```
+Conclusiones que importan:
 
-Es decir: el Worker se despliega correctamente en
-`https://sanmerida-com.alexruizrondon.workers.dev`, pero ese dominio es **de otro sitio
-web**. Un despliegue perfecto no sirve de nada si el tráfico de los usuarios no llega a él.
+1. **`sanmerida.com` no es este proyecto.** Lo sirve un nginx sobre AWS y su `www` es un
+   CNAME a `sites.apts247.info` (una plataforma de apartamentos, sin relación). El DNS
+   vive en **AWS Route 53** (`ns-1521.awsdns-62.org` y compañía), **no** en Cloudflare.
+2. **El proyecto nunca ha estado en un dominio propio.** El único sitio donde se sirve la
+   aplicación es la URL del Worker.
+3. Por tanto, **el runbook del WAF y de Access (9.8) no se puede aplicar todavía**: no hay
+   un dominio sobre el que ponerlos.
 
-**Comprobación (30 segundos):**
+**Cómo se identifica la app en 5 segundos.** Su cabecera CSP lleva
+`report-uri /api/csp-report`, que es única de este proyecto:
 
 ```powershell
-curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "Server|strict-transport"
+curl.exe -s -D - -o NUL https://EL-DOMINIO/ | Select-String "server|report-uri"
 ```
 
-Si no aparece `strict-transport-security`, o el `Server` no es de Cloudflare, ese dominio
-no está sirviendo el Worker.
+Si aparece `report-uri /api/csp-report`, es este Worker. Si aparece `Server: nginx` o no
+aparece la CSP, es otro sitio.
 
-**Arreglo:** en el panel de Cloudflare, *Workers & Pages* → `sanmerida-com` → *Settings* →
-*Domains & Routes* → *Add* → *Custom Domain*. Requiere que la zona DNS esté en **esa misma
-cuenta** de Cloudflare (los nameservers del dominio deben ser los de Cloudflare). Si el DNS
-vive en otro proveedor, hay que mover la zona o crear un `CNAME` al `workers.dev` (menos
-limpio: se pierde el WAF, el Access y el certificado gestionado).
+**Para poner un dominio propio** (requisito previo de 9.8):
+
+1. La zona DNS del dominio tiene que estar en **esta** cuenta de Cloudflare: los
+   nameservers del dominio deben ser los de Cloudflare. `sanmerida.com` **no** lo está.
+2. *Workers & Pages* → `sanmerida-com` → *Settings* → *Domains & Routes* → *Add* →
+   *Custom Domain*.
+3. Comprobar con el comando de arriba que responde `report-uri /api/csp-report`.
+
+> Mientras no haya dominio propio, la app está accesible en la URL de `workers.dev`, que
+> **no admite WAF ni Access** en el plan gratuito. Ahí está el valor de ponerle dominio.
+
 
 ### 9.11 Prueba de intrusión automatizada
 
