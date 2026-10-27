@@ -1,14 +1,59 @@
 import type { NextConfig } from "next";
 
 /**
- * Cabeceras de seguridad de las paginas de la aplicacion.
+ * Politica de seguridad de contenido (CSP).
  *
- * Se aplican SOLO a las rutas de pagina (no a `/api/**`) para no duplicar las que
- * ya define cada endpoint: `/api/member-files/file` establece las suyas propias
- * (CSP estricta + nosniff) al entregar documentos.
+ * Se envia **en firme** (`Content-Security-Policy`) y, ademas, una version mas
+ * estricta en modo informe (`-Report-Only`) para seguir midiendo el camino hacia
+ * una CSP sin `unsafe-inline` (requiere nonces generados en el middleware).
+ *
+ * Origenes externos verificados en el codigo (no se permite nada mas):
+ *   - tiles del mapa:      https://{s}.tile.openstreetmap.org  -> img-src
+ *   - buscar direccion:    https://nominatim.openstreetmap.org -> connect-src
+ *   - mapa embebido:       https://www.openstreetmap.org/...   -> frame-src
+ *   - mapa de contacto:    https://www.google.com/maps?...     -> frame-src
+ *   - imagenes del feed:   cualquier https (el admin pega URLs)
+ *
+ * El OCR (tesseract.js) corre en el SERVIDOR (`/api/member-files/scan`), asi que
+ * no necesita ninguna directiva del navegador.
  *
  * Ver `docs/SEGURIDAD_INTEGRAL.md` seccion 9.1.
  */
+const esProduccion = process.env.NODE_ENV === "production";
+
+const CSP_APLICADA = [
+  "default-src 'self'",
+  // Next inyecta el arranque de la hidratacion inline; sin nonces hay que
+  // permitirlo. `unsafe-eval` NO se incluye en produccion: solo lo necesita el
+  // HMR de webpack en desarrollo.
+  `script-src 'self' 'unsafe-inline'${esProduccion ? "" : " 'unsafe-eval'"}`,
+  // Tailwind genera estilos inline.
+  "style-src 'self' 'unsafe-inline'",
+  // Imagenes locales, capturas del escaner (blob) y tiles del mapa / feed (https).
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  // El propio API y Nominatim (busqueda de direcciones del mapa).
+  "connect-src 'self' https:",
+  "worker-src 'self' blob:",
+  // Mapas embebidos: OpenStreetMap (previsualizacion) y Google Maps (contacto).
+  "frame-src 'self' https://www.google.com https://www.openstreetmap.org",
+  // Nadie puede embeber el sitio (bloquea el clickjacking).
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  "upgrade-insecure-requests",
+].join("; ");
+
+/**
+ * Objetivo mas estricto: sin `unsafe-inline`. Va en modo informe para detectar
+ * que lo bloquea antes de activarlo (necesita nonces en el middleware).
+ */
+const CSP_OBJETIVO = CSP_APLICADA.replace(
+  /script-src 'self' 'unsafe-inline'/,
+  "script-src 'self'",
+).replace(/style-src 'self' 'unsafe-inline'/, "style-src 'self'");
+
 const SECURITY_HEADERS = [
   // Fuerza HTTPS y evita la degradacion a HTTP.
   { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
@@ -25,29 +70,11 @@ const SECURITY_HEADERS = [
   },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
   { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
-  // La CSP va primero en modo "Report-Only": se recogen infracciones sin bloquear
-  // nada. Cuando el informe este limpio, se cambia a `Content-Security-Policy`.
-  {
-    key: "Content-Security-Policy-Report-Only",
-    value: [
-      "default-src 'self'",
-      // Next inyecta scripts inline; tesseract.js usa workers desde blob.
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
-      // Tailwind genera estilos inline.
-      "style-src 'self' 'unsafe-inline'",
-      // Imagenes locales, del bucket y capturas del escaner.
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
-      "connect-src 'self' https:",
-      "worker-src 'self' blob:",
-      // Mapa de ubicacion (Leaflet/OpenStreetMap y el iframe de Google Maps).
-      "frame-src 'self' https://www.google.com https://www.openstreetmap.org",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "object-src 'none'",
-    ].join("; "),
-  },
+  // CSP en firme: bloquea inyeccion de scripts externos, exfiltracion de datos,
+  // objetos embebidos y clickjacking.
+  { key: "Content-Security-Policy", value: CSP_APLICADA },
+  // Y el objetivo mas estricto, solo para medir.
+  { key: "Content-Security-Policy-Report-Only", value: CSP_OBJETIVO },
 ];
 
 const nextConfig: NextConfig = {

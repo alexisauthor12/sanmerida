@@ -19,7 +19,7 @@ estado objetivo y el cambio concreto por archivo.
 > | `admin-direct-login` (hallazgo D) | **Eliminado** |
 > | Rate limiting (hallazgo E) | **Activo** (namespace KV `RATE_LIMIT` creado) |
 > | TLS sin validar (hallazgo F) | **Cerrado** en `register` (pasa a Prisma/Hyperdrive) |
-> | Cabeceras de seguridad (hallazgo G) | **Aplicadas** (CSP en modo Report-Only) |
+> | Cabeceras de seguridad (hallazgo G) | **Aplicadas** con CSP **en firme** (y el objetivo mas estricto en modo informe) |
 > | Auditoria (hallazgo H) | **Completa**: registro, panel de consulta, alertas y cierre global de sesiones |
 > | Revocacion de sesiones (hallazgo I) | **Aplicada** (`tokenVersion` + boton de cierre global) |
 > | Enumeracion de cedulas (hallazgo J) | Mitigada (la ruta exige ADMIN) |
