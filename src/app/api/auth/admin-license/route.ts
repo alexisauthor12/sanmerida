@@ -5,6 +5,7 @@ import {
   createAdminAccessToken,
 } from "@/lib/auth";
 import { getAdminSecurityConfig } from "@/lib/admin-config";
+import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/session";
 
 type AdminPayload = {
@@ -65,6 +66,19 @@ export async function POST(request: Request) {
     );
   }
 
+  // La licencia es un step-up: solo tiene sentido para una cuenta ADMIN.
+  const cuenta = await prisma.user.findUnique({
+    where: { id: String(sessionUser.userId) },
+    select: { tokenVersion: true, role: true },
+  });
+
+  if (!cuenta || cuenta.role !== "ADMIN") {
+    return NextResponse.json(
+      { ok: false, message: "Tu cuenta no tiene el rol administrativo requerido." },
+      { status: 403 }
+    );
+  }
+
   const response = NextResponse.json({
     ok: true,
     message: "Acceso de administrador validado correctamente.",
@@ -73,6 +87,8 @@ export async function POST(request: Request) {
   const adminAccessToken = await createAdminAccessToken({
     sub: String(sessionUser.userId),
     email: sessionUser.email,
+    // Ligada a esta sesion: un logout global invalida tambien la licencia.
+    tokenVersion: cuenta.tokenVersion,
   });
 
   response.cookies.set({

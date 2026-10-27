@@ -46,6 +46,8 @@ enum AuditAction {
   NOVEDAD_DELETE
   GRUPO_EXPORT
   RATE_LIMIT_BLOCK
+  /// El guard denego el acceso (permiso insuficiente o recurso ajeno).
+  ACCESS_DENIED
 }
 
 model User {

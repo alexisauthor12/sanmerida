@@ -162,14 +162,15 @@ export async function POST(request: Request) {
       id: string;
       email: string;
       nombre: string;
-      isMember: boolean;
+      role: string;
+      tokenVersion: number;
     }>(
       `INSERT INTO "User"
         ("id", "nombre", "apellido", "email", "telefono",
-         "passwordHash", "isMember", "createdAt", "updatedAt")
+         "passwordHash", "role", "isMember", "createdAt", "updatedAt")
        VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING "id", "email", "nombre", "isMember"`,
+        ($1, $2, $3, $4, $5, $6, $7::"UserRole", $8, $9, $10)
+       RETURNING "id", "email", "nombre", "role", "tokenVersion"`,
       [
         createdId,
         nombre,
@@ -177,6 +178,10 @@ export async function POST(request: Request) {
         email,
         telefono,
         passwordHash,
+        // El registro publico es un PROSPECT: accede al dashboard de catalogo,
+        // feed y novedades, pero NUNCA a expedientes, documentos ni cuotas de
+        // terceros (ver docs/SEGURIDAD_INTEGRAL.md 13.1).
+        "PROSPECT",
         false,
         createdAt,
         createdAt,
@@ -191,7 +196,8 @@ export async function POST(request: Request) {
 
     const response = NextResponse.json({
       ok: true,
-      message: "Registro completado. Bienvenido al TEAM SAN.",
+      message: "Registro completado. Ya puedes explorar el catálogo y las novedades.",
+      role: "PROSPECT",
     });
 
     if (!skipSession) {
@@ -199,7 +205,8 @@ export async function POST(request: Request) {
         sub: row.id,
         email: row.email,
         nombre: row.nombre,
-        isMember: row.isMember,
+        role: "PROSPECT",
+        tokenVersion: row.tokenVersion,
       });
 
       response.cookies.set({
@@ -209,21 +216,19 @@ export async function POST(request: Request) {
         sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
         path: "/",
-        maxAge: 60 * 60 * 24 * 7,
+        maxAge: 60 * 60 * 8,
       });
     }
 
     return response;
   } catch (error) {
-    console.error("[REGISTER] ERROR REAL:", error);
-
-    const message =
-      error instanceof Error ? error.message : String(error);
+    // El detalle queda solo en el log del servidor: nunca en la respuesta.
+    console.error("[REGISTER] No se pudo crear la cuenta:", error);
 
     return NextResponse.json(
       {
         ok: false,
-        message: `Error de base de datos: ${message}`,
+        message: "No se pudo completar el registro. Intenta de nuevo en unos minutos.",
       },
       { status: 500 },
     );

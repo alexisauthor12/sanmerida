@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { createSessionToken, AUTH_COOKIE_NAME } from "@/lib/auth";
+import type { Role } from "@/lib/authz.mjs";
 import { prisma } from "@/lib/prisma";
 import { normalizeMemberUsername } from "@/lib/security-helpers.mjs";
 
@@ -18,7 +19,8 @@ type SessionUser = {
   id: string;
   email: string;
   nombre: string;
-  isMember: boolean;
+  role: Role;
+  tokenVersion: number;
 };
 
 function buildLoginResponse(user: SessionUser) {
@@ -26,9 +28,15 @@ function buildLoginResponse(user: SessionUser) {
     sub: user.id,
     email: user.email,
     nombre: user.nombre,
-    isMember: user.isMember,
+    role: user.role,
+    tokenVersion: user.tokenVersion,
   }).then((token) => {
-    const response = NextResponse.json({ ok: true, message: "Bienvenido al sistema SAN.", isMember: user.isMember });
+    const response = NextResponse.json({
+      ok: true,
+      message: "Bienvenido al sistema SAN.",
+      role: user.role,
+      isMember: user.role === "MEMBER",
+    });
 
     response.cookies.set({
       name: AUTH_COOKIE_NAME,
@@ -37,7 +45,7 @@ function buildLoginResponse(user: SessionUser) {
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: 60 * 60 * 12,
     });
 
     return response;
@@ -64,7 +72,8 @@ function getDevelopmentFallbackUser(params: {
         id: "dev-member-san-admin",
         email: "san-admin@local",
         nombre: "SAN Admin",
-        isMember: true,
+        role: "MEMBER",
+        tokenVersion: 1,
       };
     }
     return null;
@@ -75,7 +84,8 @@ function getDevelopmentFallbackUser(params: {
       id: "dev-account-admin3",
       email: "admin3@sanmerida.com",
       nombre: "Admin",
-      isMember: false,
+      role: "ADMIN",
+      tokenVersion: 1,
     };
   }
 
@@ -84,7 +94,8 @@ function getDevelopmentFallbackUser(params: {
       id: "dev-account-user2",
       email: "user2@sanmerida.com",
       nombre: "Usuario",
-      isMember: false,
+      role: "ADMIN",
+      tokenVersion: 1,
     };
   }
 
@@ -182,7 +193,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (portal === "member" && !user.isMember) {
+  if (portal === "member" && user.role !== "MEMBER") {
     return NextResponse.json(
       {
         ok: false,
@@ -193,7 +204,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (portal === "account" && user.isMember) {
+  if (portal === "account" && user.role === "MEMBER") {
     return NextResponse.json(
       {
         ok: false,
@@ -208,6 +219,7 @@ export async function POST(request: Request) {
     id: user.id,
     email: user.email,
     nombre: user.nombre,
-    isMember: user.isMember,
+    role: user.role as Role,
+    tokenVersion: user.tokenVersion,
   });
 }
