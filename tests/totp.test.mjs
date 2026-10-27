@@ -258,10 +258,35 @@ test("normalizeRecoveryCode limpia el formato de presentacion", () => {
   assert.equal(normalizeRecoveryCode("AB0D1L89"), "ABD");
 });
 
-test("un codigo de recuperacion nunca se confunde con un codigo TOTP", () => {
-  // Los TOTP son 6 digitos 0-9; los de recuperacion, 10 caracteres A-Z2-7.
+test("un codigo de recuperacion nunca vale como codigo TOTP", async () => {
+  // Cuidado con el supuesto facil: los codigos de recuperacion usan el alfabeto
+  // base32 (A-Z y 2-7), asi que **si llevan digitos**. `normalizeTotpCode` extrae
+  // los digitos y solo devuelve algo si son exactamente 6, cosa que ocurre en ~0,4 %
+  // de los codigos. Afirmar que siempre devuelve "" es un test inestable (falla ~8 %
+  // de las veces con 20 codigos), y ademas no es la propiedad que importa.
+  //
+  // La propiedad que importa es esta: un codigo de recuperacion se comprueba contra
+  // su propio hash, nunca contra el secreto TOTP, asi que no puede validar como TOTP.
+  const secreto = generateTotpSecret();
+  const codigos = generateRecoveryCodes(20);
+
+  for (const codigo of codigos) {
+    assert.equal(
+      await verifyTotpCode(secreto, codigo),
+      false,
+      `el codigo de recuperacion ${codigo} valido como TOTP`,
+    );
+  }
+});
+
+test("normalizeTotpCode solo devuelve vacio o exactamente 6 digitos", () => {
   for (const codigo of generateRecoveryCodes(20)) {
-    assert.equal(normalizeTotpCode(codigo), "");
+    const normalizado = normalizeTotpCode(codigo);
+
+    assert.ok(
+      normalizado === "" || /^\d{6}$/.test(normalizado),
+      `normalizeTotpCode devolvio algo raro: ${JSON.stringify(normalizado)}`,
+    );
   }
 });
 
