@@ -85,6 +85,7 @@ const ETIQUETA_ACCION: Record<string, string> = {
   RECOVERY_CODE_USED: "Código de recuperación usado",
   AUDIT_PURGE: "Purga por retención",
   CORRECCION_SOLICITADA: "Corrección solicitada",
+  PASSWORD_CHANGED: "Contraseña cambiada",
 };
 
 export default function AuditoriaView() {

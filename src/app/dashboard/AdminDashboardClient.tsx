@@ -6,6 +6,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import SavedLocationPreview, { MissingLocationPreview } from "@/app/components/SavedLocationPreview";
 import AuditoriaView from "./AuditoriaView";
 import SeguridadView from "./SeguridadView";
+import CambiarContrasena from "./CambiarContrasena";
 import { computeFinancing, isFinancingPlan } from "@/lib/moto-financing.mjs";
 import {
   Activity,
@@ -6747,8 +6748,9 @@ export default function AdminDashboardClient({ user }: { user: AdminUser }) {
         )}
 
         {activeSection === "seguridad" && (
-          <section id="seguridad" className="scroll-mt-24">
+          <section id="seguridad" className="scroll-mt-24 space-y-4">
             <SeguridadView />
+            <CambiarContrasena />
           </section>
         )}
 

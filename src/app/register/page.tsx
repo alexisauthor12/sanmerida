@@ -187,7 +187,7 @@ export default function RegisterPage() {
                   onChange={(event) => handleChange("password", event.target.value)}
                   placeholder="Contraseña"
                   autoComplete="new-password"
-                  minLength={8}
+                  minLength={12}
                   required
                   className="w-full rounded-xl border border-white/15 bg-black/45 px-4 py-3 text-white placeholder:text-white/35 outline-none transition focus:border-white/30"
                 />
@@ -197,7 +197,7 @@ export default function RegisterPage() {
                   onChange={(event) => handleChange("confirmPassword", event.target.value)}
                   placeholder="Confirmar contraseña"
                   autoComplete="new-password"
-                  minLength={8}
+                  minLength={12}
                   required
                   className="w-full rounded-xl border border-white/15 bg-black/45 px-4 py-3 text-white placeholder:text-white/35 outline-none transition focus:border-white/30"
                 />

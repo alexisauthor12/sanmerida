@@ -62,6 +62,12 @@ export const RATE_LIMIT_RULES = {
   cspReport: {
     ip: { limit: 120, windowSeconds: 300 },
   },
+  // Cambiar la contrasena exige conocer la actual: sin limite seria un oraculo
+  // para adivinarla desde dentro de una sesion robada.
+  passwordChange: {
+    ip: { limit: 10, windowSeconds: 900 },
+    identity: { limit: 5, windowSeconds: 900 },
+  },
 };
 
 /** Nombres de endpoint validos. */

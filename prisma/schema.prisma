@@ -70,6 +70,9 @@ enum AuditAction {
   /// El titular pidio corregir un dato de su expediente (derecho de rectificacion).
   /// El equipo aplica el cambio y ese cambio queda como EXPEDIENTE_UPDATE.
   CORRECCION_SOLICITADA
+
+  /// El usuario cambio su contrasena. Invalida todas sus sesiones (`tokenVersion`).
+  PASSWORD_CHANGED
 }
 
 model User {

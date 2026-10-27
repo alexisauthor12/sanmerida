@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, createSessionToken } from "@/lib/auth";
 import { CONSENT_REQUIRED_MESSAGE, buildConsentRecord } from "@/lib/consent.mjs";
+import { validatePassword } from "@/lib/password-policy.mjs";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -58,12 +59,13 @@ export async function POST(request: Request) {
     );
   }
 
-  if (password.length < 8) {
+  // Politica de contrasenas (`docs/SEGURIDAD_INTEGRAL.md` 7.5): 12 caracteres, 3 de
+  // 4 tipos, sin contrasenas comunes y sin datos del propio usuario.
+  const politica = validatePassword(password, { nombre, apellido, email });
+
+  if (!politica.ok) {
     return NextResponse.json(
-      {
-        ok: false,
-        message: "La contraseña debe tener al menos 8 caracteres.",
-      },
+      { ok: false, message: politica.message, faltantes: politica.faltantes },
       { status: 400 },
     );
   }
