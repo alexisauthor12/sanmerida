@@ -10,7 +10,6 @@ import {
   Bell,
   BriefcaseBusiness,
   UserPlus,
-  Fuel,
   LayoutDashboard,
   X,
   FileCheck2,
@@ -28,20 +27,6 @@ import {
   TriangleAlert,
   Newspaper,
 } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  Cell,
-  CartesianGrid,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 const API_BASE =
   typeof window !== "undefined" && window.location.hostname === "localhost"
