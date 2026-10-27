@@ -735,7 +735,39 @@ salida; están en `docs/SEGURIDAD_INTEGRAL.md` 11.6.
 > **Ojo con el dominio.** Si se apunta a un dominio que no sirve la aplicación, todo
 > responde 404 y la prueba no dice nada útil (ver 9.10).
 
-### 9.12 Variables de entorno de los scripts
+### 9.13 Cifrado de los datos personales: migracion y rotacion
+
+Los 11 campos personales de `MemberProfile` estan cifrados a nivel de columna
+(`docs/SEGURIDAD_INTEGRAL.md` 9.6). Se aplica solo, con una extension de Prisma: no hay que
+hacer nada al leer ni al guardar.
+
+**Migrar filas que hayan quedado en claro** (por ejemplo, las que inserte un script antiguo).
+Va por pasos a proposito:
+
+```powershell
+node scripts/encrypt-member-pii.mjs --capturar    # 1. guarda los valores actuales
+node scripts/encrypt-member-pii.mjs --verificar   # 2. comprueba que nada cambio
+node scripts/encrypt-member-pii.mjs               # 3. simulacro: dice que haria
+node scripts/encrypt-member-pii.mjs --apply       # 4. cifra
+node scripts/encrypt-member-pii.mjs --comprobar   # 5. descifra y compara con la captura
+```
+
+Es **idempotente**: lo que ya esta cifrado se salta, asi que se puede repetir sin miedo.
+La captura (`backups/pii-antes-de-cifrar.json`) son los datos **en claro**: guardala en un
+sitio seguro y no la dejes en el equipo.
+
+**La clave.** Es `MEMBER_KEY_ENCRYPTION_SECRET`, con `AUTH_SECRET` de respaldo. Consecuencias:
+
+| Situacion | Que pasa |
+|---|---|
+| Rotar `MEMBER_KEY_ENCRYPTION_SECRET` | Las credenciales de miembro **y** los campos personales quedan pendientes de recifrar: `rotate-member-key-secret.mjs` cubre las credenciales, `encrypt-member-pii.mjs` los campos |
+| Rotar `AUTH_SECRET` sin haber separado el secreto | **Los campos personales dejan de poder descifrarse.** Hoy son el mismo valor, asi que esto es real: hay que separar el secreto (9.2) **antes** de rotar la firma de sesiones |
+| Perder la clave | Las direcciones, referencias y coordenadas **no se recuperan**. Ni con el respaldo: el respaldo tambien las tiene cifradas |
+
+> Por eso el orden importa: **primero** separar `MEMBER_KEY_ENCRYPTION_SECRET` (9.2),
+> **despues** rotar `AUTH_SECRET` cuando toque.
+
+### 9.14 Variables de entorno de los scripts
 
 | Variable | Para que |
 |---|---|

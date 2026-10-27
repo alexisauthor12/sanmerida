@@ -1022,7 +1022,62 @@ Verificado con `tests/backup-crypto.test.mjs` y con una prueba real de ciclo com
 
 ---
 
-## 10) Datos personales y cumplimiento
+### 9.6 Cifrado a nivel de columna — **implementado** (paso 3.3)
+
+Cifra los datos personales **en la propia columna**, no en el disco: si alguien se lleva un
+volcado de la base o mira por encima en el panel de Supabase, ve texto sin valor.
+
+| Campo | Por que |
+|---|---|
+| `direccion` | Donde vive la persona |
+| `references` | Terceros: nombres y telefonos de gente que no dio su consentimiento |
+| `ubicacionLat` / `ubicacionLng` / `ubicacionLink` | El pin de su casa |
+| `referenciaLat` / `referenciaLng` / `referenciaLink` | Pin de referencia 1 |
+| `referencia2Lat` / `referencia2Lng` / `referencia2Link` | Pin de referencia 2 |
+
+**Por que van los enlaces.** `*Link` es una URL de Google Maps con las coordenadas escritas
+dentro. Cifrar solo `lat`/`lng` habria dejado las coordenadas en texto en la misma fila: la
+misma seguridad falsa que la cedula. Por eso van los **11 campos**, no 4.
+
+**Lo que NO se cifra, y hay que decirlo:** la **cedula**. Sigue en claro porque ademas forma
+parte de las rutas del bucket de documentos. Cifrarla en la base daria una sensacion de
+seguridad que no existe: el dato seguiria legible en las claves de almacenamiento. Ese
+cambio (renombrar los objetos) es de otra envergadura y queda pendiente y reconocido.
+
+**Como se aplica.** Con una **extension de Prisma** (`src/lib/prisma-pii.mjs`) en el unico
+sitio donde se construye el cliente. Hay mas de veinte puntos que leen o escriben
+`MemberProfile`; cifrar en cada uno seria fragil (basta olvidar uno para guardar texto en
+claro o devolver `enc:v1:...` a la interfaz). La extension intercepta la operacion:
+
+- lo que **entra** (`data`, `create`, `update`, tambien en array) se cifra antes de la base;
+- lo que **sale** se descifra antes de devolverse.
+
+Los numeros de ubicacion vuelven como **numeros**, asi que no hubo que tocar ni un tipo de
+la interfaz ni un componente. Lo unico que se escapa de una extension asi son las consultas
+crudas (`$queryRaw`) y los `include` anidados que lean estos campos: se comprobo que **no
+hay ninguno** de los dos.
+
+**Formato y compatibilidad.** AES-256-GCM con IV aleatorio por valor, en
+`enc:v1:<iv>:<cifrado>`. El prefijo es lo que permite que convivan valores cifrados y
+heredados en claro: al leer, lo que no empieza por `enc:v1:` se devuelve tal cual. Asi la
+migracion se puede hacer por partes sin romper nada. El **nombre del campo va como dato
+asociado** (AAD), de modo que el texto cifrado de `direccion` no se puede pegar en
+`references` y que cuele.
+
+**Clave.** El mismo secreto que las credenciales de miembro
+(`MEMBER_KEY_ENCRYPTION_SECRET`, con `AUTH_SECRET` de respaldo), y con **derivacion
+separada por contexto**: aunque el secreto sea el mismo, la clave de estos campos no es la
+que firma sesiones. Al descifrar se prueba el activo y luego el heredado, igual que con las
+credenciales, para poder rotar sin cortes.
+
+**Si se pierde la clave, estos datos no se recuperan.** Es la contrapartida de cifrar: el
+respaldo previo a la migracion es obligatorio, y la clave tiene que estar guardada fuera de
+este equipo.
+
+**Lo que esto no protege:** un atacante con la clave, y los datos personales que **no** estan
+en esta lista (`telefono`, `email`, `nombre`, `apellido`, y la cedula). Se cifro lo que
+identifica **donde vive** alguien, que es lo mas peligroso si el volcado se filtra.
+
 
 ### 10.1 Datos tratados
 
@@ -1259,6 +1314,30 @@ acto deliberado y siempre avisa** (`"0"`, `""` o `"no"` no la desactivan). Inclu
 **guardian** que recorre `scripts/` y falla si algun archivo vuelve a escribir
 `rejectUnauthorized: false` a mano: es la unica forma de que el hallazgo F no reaparezca.
 
+### 11.16 `tests/field-crypto.test.mjs` — el nucleo del cifrado de campos
+
+Verifica el formato (`enc:v1:<iv>:<cifrado>`), que cada cifrado use un IV distinto aunque el
+texto sea el mismo, que con otro secreto no abra, y que **el cifrado de un campo no valga
+para otro** (el dato asociado). Comprueba tambien que `decryptField` devuelve `null` —nunca
+lanza— con valores corruptos, truncados o con otro prefijo, y que sobrevive a acentos,
+emojis y saltos de linea.
+
+### 11.17 `tests/member-pii.test.mjs` — el mapeo de los campos personales
+
+Cubre los 11 campos, la ida y vuelta (los numeros vuelven como numeros), que solo se
+transformen las claves **presentes** (si no, un `update` parcial sobrescribiria datos), que
+un valor heredado en claro pase tal cual, que un valor ya cifrado no se cifre dos veces, y
+que un valor ilegible quede en `null` en vez de inventarse un dato. Incluye
+`aNumeroOpcional`, que es lo que permite que los tipos sigan cuadrando.
+
+### 11.18 `tests/prisma-pii.test.mjs` — la extension que lo aplica sola
+
+Comprueba que se cifren `data`, `create` y `update` (las tres formas en que Prisma recibe una
+escritura, incluido un array de `createMany`), que la cedula **no** se cifre, que el `where`
+no se toque y que argumentos vacios o raros no revienten. Es la pieza que decide **que** se
+guarda cifrado: equivocarse aqui significa guardar datos personales en claro sin que nadie se
+entere.
+
 ## 12) Plan de implementacion por fases
 
 Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
@@ -1310,7 +1389,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 |---|---|
 | 3.1 | 2FA (TOTP) obligatorio para ADMIN — **hecho** (seccion 7.6; disponible para todos los roles) |
 | 3.2 | Cloudflare WAF + Access delante de `/admin` — **runbook listo** (`OPERACIONES_PRODUCCION.md` 9.8); se configura en el panel, no en el repositorio |
-| 3.3 | Cifrado a nivel de columna para PII sensible |
+| 3.3 | Cifrado a nivel de columna para PII sensible — **hecho** (seccion 9.6: los 11 campos de direccion, referencias y los tres pines de ubicacion, con extension de Prisma y migracion verificada) |
 | 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion — **hecho** (seccion 13.7) |
 | 3.5 | Rotacion periodica de secretos y de la licencia administrativa (runbook) — **hecho** (`OPERACIONES_PRODUCCION.md` 9.7) |
 
