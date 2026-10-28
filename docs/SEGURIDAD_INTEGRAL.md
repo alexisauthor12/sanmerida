@@ -1406,7 +1406,7 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 
 | Paso | Entrega |
 |---|---|
-| 2.1 | `npm audit` + parcheo de las 2 criticas y 21 altas |
+| 2.1 | `npm audit` — **hecho el 28/10/2026**: `sharp` a `0.35.5` (corrige 1 de las 5 altas; ver la nota de abajo). Quedan 4 altas de la CLI de Prisma (`deepmerge-ts`, `effect`), que son herramientas de compilacion y no se ejecutan en el Worker; el arreglo exige Prisma 7 (cambio mayor) |
 | 2.2 | Validacion por magic bytes en las subidas — **hecho** (`src/lib/file-signature.mjs`, seccion 8.8) |
 | 2.3 | Backups cifrados + prueba de restauracion documentada — **hecho** (seccion 9.4) |
 | 2.4 | Alertas: descargas masivas, intentos fallidos, accesos fuera de horario — **hecho** (panel de auditoria) |
@@ -1414,14 +1414,27 @@ Cada fase termina con `npx tsc --noEmit`, `npx eslint .`, `npm run test` y
 | 2.6 | Actualizacion de `docs/OPERACIONES_PRODUCCION.md`: variables, checklist y procedimiento de incidentes — **hecho** (seccion 10 del documento de operaciones: deteccion, contencion, evaluacion, notificacion y plazos) |
 | 2.7 | Aviso de tratamiento de datos y consentimiento en el registro de miembros — **hecho** (seccion 10.2, punto 6; tambien en el registro publico) |
 
+> **Nota sobre 2.1 (auditoria de dependencias, 28/10/2026).** `npm audit --omit=dev`
+> pasa de 5 altas a 4 con `sharp@0.35.5`. El cambio es incompatible y hubo que ajustar
+> dos cosas: el modulo ya no es invocable (la fabrica es el export por defecto) y
+> `sharpen()` exige objeto en vez de numero. Se comprobo con una imagen real que la
+> cadena `rotate + resize + modulate + sharpen + jpeg` sigue produciendo un JPEG valido.
+>
+> Las 4 que quedan son `deepmerge-ts` y `effect`, dependencias de la **CLI de Prisma**
+> (`@prisma/config`). Son herramientas de compilacion: **no se ejecutan en el Worker**,
+> asi que no son alcanzables desde una peticion. El arreglo automatico propone
+> `prisma@7.10.1`, un salto de version mayor que tocaria el cliente y los adaptadores
+> (justo la parte mas fragil del proyecto: ver la nota de OpenNext). **Riesgo aceptado
+> y documentado**, a revisar cuando se planifique el salto a Prisma 7.
+
 ### Fase 3 — Defensa en profundidad
 
 | Paso | Entrega |
 |---|---|
 | 3.1 | 2FA (TOTP) obligatorio para ADMIN — **hecho** (seccion 7.6; disponible para todos los roles) |
-| 3.2 | Cloudflare WAF + Access delante de `/admin` — **runbook listo** (`OPERACIONES_PRODUCCION.md` 9.8); se configura en el panel, no en el repositorio |
+| 3.2 | Cloudflare WAF + Access delante de `/admin` — **runbook listo** (`OPERACIONES_PRODUCCION.md` 9.8); se configura en el panel, no en el repositorio. **Bloqueado por el usuario**: el token de Cloudflare solo tiene `zone: read` (el resto da `403`) y **Zero Trust no esta activado** en la cuenta (`access.api.error.not_enabled`). `npm run cf:configurar` esta listo y probado; en cuanto haya token con `Zone:DNS:Edit`, `Zone:Config Rules:Edit`, `Zone:Zone WAF:Edit` y `Account:Access:Edit`, y Zero Trust activado, se aplica con `--apply` |
 | 3.3 | Cifrado a nivel de columna para PII sensible — **hecho** (seccion 9.6: los 11 campos de direccion, referencias y los tres pines de ubicacion, con extension de Prisma y migracion verificada) |
-| 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion — **hecho** (seccion 13.7) |
+| 3.4 | Separacion de `AUTH_SECRET` y `MEMBER_KEY_ENCRYPTION_SECRET` + script de rotacion — **hecho y ejecutado** (seccion 13.7): secreto separado, publicado en el Worker, credencial de miembro y 8 campos personales recifrados, y comprobado contra la captura previa |
 | 3.5 | Rotacion periodica de secretos y de la licencia administrativa (runbook) — **hecho** (`OPERACIONES_PRODUCCION.md` 9.7) |
 
 ---
