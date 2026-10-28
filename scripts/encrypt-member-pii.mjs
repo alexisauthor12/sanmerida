@@ -28,7 +28,7 @@ import { config as loadEnv } from "dotenv";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Client } from "pg";
 import { CAMPOS_PII, decryptPiiFields } from "../src/lib/member-pii.mjs";
-import { encryptField, isEncryptedField } from "../src/lib/field-crypto.mjs";
+import { decryptField, encryptField, isEncryptedField } from "../src/lib/field-crypto.mjs";
 import { resolveMemberKeySecrets } from "../src/lib/member-key-secret.mjs";
 import { dbSslFor } from "../src/lib/db-ssl.mjs";
 
@@ -37,6 +37,7 @@ loadEnv({ path: [".env.local", ".env"] });
 const CAPTURAR = process.argv.includes("--capturar");
 const VERIFICAR = process.argv.includes("--verificar");
 const COMPROBAR = process.argv.includes("--comprobar");
+const RECIFRAR = process.argv.includes("--recifrar");
 const APLICAR = process.argv.includes("--apply");
 const ARCHIVO = "backups/pii-antes-de-cifrar.json";
 
@@ -90,6 +91,35 @@ function mismoValor(antes, despues) {
   }
 
   return String(antes) === String(despues);
+}
+
+/**
+ * Campos que hay que **recifrar**: estan cifrados, pero con un secreto antiguo.
+ *
+ * Es lo que falta cuando se separa `MEMBER_KEY_ENCRYPTION_SECRET`: las filas siguen
+ * abriendose porque al descifrar se prueba el heredado, pero quedan con la clave vieja.
+ * Aqui se detectan para pasarlas a la nueva.
+ *
+ * @returns {Promise<string[]>} nombres de los campos a recifrar
+ */
+async function aRecifrar(fila, secretos) {
+  const campos = [];
+
+  for (const campo of CAMPOS_PII) {
+    const valor = fila[campo];
+
+    if (valor === null || valor === undefined || valor === "" || !isEncryptedField(valor)) continue;
+
+    // Si ya abre con el secreto activo, esta al dia.
+    if ((await decryptField(valor, secretos.activo, campo)) !== null) continue;
+
+    // Si abre con el heredado, es de los antiguos: hay que pasarlo al nuevo.
+    if (secretos.heredado && (await decryptField(valor, secretos.heredado, campo)) !== null) {
+      campos.push(campo);
+    }
+  }
+
+  return campos;
 }
 
 const db = new Client({
@@ -214,21 +244,42 @@ try {
     }
   }
 
-  // --- 5. Cifrar (simulacro o de verdad) -----------------------------------
+  // --- 5. Cifrar o recifrar (simulacro o de verdad) ------------------------
   if (!CAPTURAR && !VERIFICAR && !COMPROBAR) {
-    const conDatos = filas.filter((fila) => pendientes(fila).length > 0);
-    const totalCampos = filas.reduce((suma, fila) => suma + pendientes(fila).length, 0);
+    const secretos = resolveMemberKeySecrets(process.env);
+
+    /** Campos que hay que tocar en esta fila, segun el modo. */
+    const camposDe = async (fila) =>
+      RECIFRAR ? aRecifrar(fila, secretos) : pendientes(fila);
+
+    const porFila = [];
+
+    for (const fila of filas) porFila.push(await camposDe(fila));
+
+    const conDatos = porFila.filter((campos) => campos.length > 0);
+    const totalCampos = porFila.reduce((suma, campos) => suma + campos.length, 0);
+
+    const verbo = RECIFRAR ? "recifrarian" : "cifrarian";
 
     console.log(
       APLICAR
-        ? `Cifrando ${totalCampos} campo(s) en ${conDatos.length} fila(s)...\n`
-        : `Simulacro: se cifrarian ${totalCampos} campo(s) en ${conDatos.length} fila(s).\n`,
+        ? `${RECIFRAR ? "Recifrando" : "Cifrando"} ${totalCampos} campo(s) en ${conDatos.length} fila(s)...\n`
+        : `Simulacro: se ${verbo} ${totalCampos} campo(s) en ${conDatos.length} fila(s).\n`,
     );
 
-    let cifrados = 0;
+    if (RECIFRAR && secretos.heredado === "") {
+      console.log(
+        "Nota: no hay secreto heredado, asi que no se puede recifrar nada. Solo tiene\n" +
+          "sentido cuando ya existe MEMBER_KEY_ENCRYPTION_SECRET y AUTH_SECRET sigue\n" +
+          "sirviendo de respaldo para lo antiguo.\n",
+      );
+    }
 
-    for (const fila of filas) {
-      const campos = pendientes(fila);
+    let tocados = 0;
+
+    for (let indice = 0; indice < filas.length; indice += 1) {
+      const fila = filas[indice];
+      const campos = porFila[indice];
 
       if (campos.length === 0) continue;
 
@@ -241,9 +292,18 @@ try {
       const valores = [];
 
       for (const campo of campos) {
+        // Se descifra con el heredado y se vuelve a cifrar con el activo.
+        const plano = RECIFRAR
+          ? await decryptField(String(fila[campo]), secretos.heredado, campo)
+          : String(fila[campo]);
+
+        if (plano === null) continue;
+
         asignaciones.push(`"${campo}" = $${valores.length + 1}`);
-        valores.push(await encryptField(String(fila[campo]), activo, campo));
+        valores.push(await encryptField(plano, secretos.activo, campo));
       }
+
+      if (asignaciones.length === 0) continue;
 
       valores.push(fila.id);
 
@@ -252,11 +312,11 @@ try {
         valores,
       );
 
-      cifrados += campos.length;
+      tocados += asignaciones.length;
     }
 
     if (APLICAR) {
-      console.log(`Cifrados ${cifrados} campo(s).\n`);
+      console.log(`${RECIFRAR ? "Recifrados" : "Cifrados"} ${tocados} campo(s).\n`);
       console.log("Comprueba que la aplicacion sigue mostrando bien los datos.\n");
     } else {
       console.log("\nSimulacro: nada escrito. Repite con --apply.\n");

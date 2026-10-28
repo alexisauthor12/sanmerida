@@ -9,13 +9,26 @@
  *
  * Nota: incluye `passwordHash` porque es un respaldo de restauracion; los hashes
  * bcrypt no son reversibles. El archivo NO se versiona.
+ *
+ * Si `BACKUP_PASSPHRASE` esta definida, el respaldo sale **cifrado** (`.json.enc`).
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { BACKUP_PASSPHRASE_ENV, encryptBackup } from "../src/lib/backup-crypto.mjs";
+
+/**
+ * Se cargan **los dos** archivos, no solo `.env`.
+ *
+ * Antes esto era `import "dotenv/config"`, que lee unicamente `.env`. La contrasena de
+ * respaldo vive en `.env.local` (donde la ponen `generar-backup-passphrase.mjs` y el
+ * resto de scripts), asi que `BACKUP_PASSPHRASE` llegaba **vacia** y el respaldo se
+ * escribia **en claro** con un aviso que nadie miraba: el cifrado existia, pero no se
+ * aplicaba nunca. Se comporta como el resto de scripts del proyecto.
+ */
+loadEnv({ path: [".env.local", ".env"] });
 
 function clean(value) {
   return value?.trim().replace(/^['"]|['"]$/g, "") ?? "";
