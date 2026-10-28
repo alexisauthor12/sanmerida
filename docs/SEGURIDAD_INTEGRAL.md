@@ -616,36 +616,36 @@ Nueva pestana **Auditoria** en `/admin` (permiso `auditoria:read`, con step-up):
 
 ### 7.1 Por que hace falta un backend externo
 
-> **⚠️ ABIERTO (27/10/2026): en produccion el limite NO se esta compartiendo.**
+> **RESUELTO (28/10/2026): el KV funciona.** La ruta `/api/salud/bindings` lo comprueba
+> **desde dentro del Worker** en produccion: `env.RATE_LIMIT` esta presente y una
+> escritura + lectura + listado de prueba funcionan.
 >
-> Comprobado: el namespace KV `RATE_LIMIT` (id `33bcc4c366ed45ae8debf76949bac4e9`) queda
-> **vacio** despues de muchas peticiones al login, mientras que el limitador **si bloquea**
-> (se observaron respuestas `429`). Es decir, esta funcionando con el **contador en memoria
-> por instancia**, no con KV.
+> ```json
+> { "contexto": "disponible",
+>   "bindings": { "RATE_LIMIT": "presente", "HYPERDRIVE": "presente",
+>                 "ASSETS": "presente", "WORKER_SELF_REFERENCE": "presente" },
+>   "rateLimitKv": "escritura y lectura OK (1 clave(s) de diagnostico visibles)" }
+> ```
 >
-> Evidencia de que la comprobacion es valida: se escribio una clave a mano con
-> `wrangler kv key put` y **si aparecio** en el listado (y expiro al cumplirse su TTL), asi
-> que el listado funciona y no es un problema de consistencia eventual.
->
-> Lo que **no** es la causa, ya descartado:
-> - No es que falte el binding: el despliegue muestra `env.RATE_LIMIT (...) KV Namespace`.
-> - No es el aviso que se anadio en `rate-limit.ts`: **no aparece** en `wrangler tail`, asi
->   que `getKv()` no devuelve `null`.
-> - No es que `kv.put` falle: el error `[rate-limit] No se pudo comprobar el limite`
->   tampoco aparece.
-> - No lo arregla usar `getCloudflareContext({ async: true })`: se desplego y el KV sigue
->   vacio.
->
-> **Impacto real**: el limite sigue aplicandose, pero **por instancia del Worker**. Con
-> varias instancias vivas, el numero de intentos que aguanta un atacante es varias veces el
-> documentado, y el contador se reinicia cuando una instancia se recicla. No es "sin
-> proteccion": es **menos proteccion de la que dice la documentacion**.
->
-> **Siguiente paso para cerrarlo**: una ruta de diagnostico temporal que devuelva que ve
-> `getCloudflareContext()` (`env.RATE_LIMIT` presente, su tipo, y el resultado de un
-> `get`/`put` de prueba). Es un ciclo de despliegue, pero da la respuesta exacta en vez de
-> seguir probando a ciegas.
+> La ruta informa ademas del **recuento de claves vivas del limitador** (`rl:*`), que es
+> la prueba de fondo: si sale a cero justo despues de varias peticiones al login, el
+> limitador no esta usando KV. Caducan solas por `expirationTtl`, asi que **un cero en
+> reposo es normal** — ver el aviso de abajo.
 
+> **⚠️ OJO CON ESTA TRAMPA (27/10/2026, aclarada):** el namespace KV `RATE_LIMIT`
+> (id `33bcc4c366ed45ae8debf76949bac4e9`) **queda vacio en reposo**, y eso se interpreto
+> como que el limitador no lo usaba. Las claves del limitador llevan `expirationTtl`
+> igual a la ventana (60-900 s), asi que **mirar el namespace despues de un rato da
+> vacio aunque todo funcione**. No es un fallo: es el TTL haciendo su trabajo.
+>
+> Leccion: para comprobar un binding **no sirve mirarlo desde fuera**; hay que
+> preguntar **desde dentro del Worker**, que es lo que hace `/api/salud/bindings`.
+> Cualquier comprobacion futura de este tipo debe empezar por ahi.
+>
+> Lo que **si** se descarto entonces y sigue descartado: falta de binding en
+> `wrangler.jsonc` (el despliegue lista `env.RATE_LIMIT (...) KV Namespace`), fallo de
+> `kv.put` (el error `[rate-limit] No se pudo comprobar el limite` no aparece en
+> `wrangler tail`) y el aviso de binding ausente (tampoco aparece).
 
 Cloudflare Workers no comparte memoria entre instancias: un contador en memoria no
 sirve. El diseno usa **Cloudflare KV** con `expirationTtl` (se agrega el binding en

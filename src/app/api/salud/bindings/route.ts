@@ -78,6 +78,7 @@ export async function GET(request: Request) {
 
   // Prueba real de ida y vuelta contra el KV del limitador.
   let pruebaKv = "no comprobado";
+  let clavesDelLimitador: Record<string, number> | null = null;
 
   if (pareceKv(env.RATE_LIMIT)) {
     const clave = `diag:${Date.now()}`;
@@ -95,6 +96,29 @@ export async function GET(request: Request) {
     } catch (error) {
       pruebaKv = `FALLO: ${error instanceof Error ? error.message : "desconocido"}`;
     }
+
+    // Prueba de fondo: si el limitador esta usando KV de verdad, aqui tienen que
+    // aparecer sus claves (`rl:<endpoint>:<ip|id>`). Se informa solo del recuento
+    // por endpoint: los nombres llevan la IP y el correo del usuario.
+    try {
+      const listado = await env.RATE_LIMIT.list({ prefix: "rl:", limit: 1000 });
+      const recuento: Record<string, number> = {};
+
+      for (const { name } of listado.keys) {
+        // "rl:login:id:alguien@ejemplo.com" -> "login:id"
+        const partes = name.split(":");
+
+        if (partes.length >= 3) {
+          const etiqueta = `${partes[1]}:${partes[2]}`;
+
+          recuento[etiqueta] = (recuento[etiqueta] ?? 0) + 1;
+        }
+      }
+
+      clavesDelLimitador = recuento;
+    } catch (error) {
+      pruebaKv += ` | no se pudo listar rl:: ${error instanceof Error ? error.message : "desconocido"}`;
+    }
   } else if (env.RATE_LIMIT !== undefined) {
     pruebaKv = "el binding existe pero no se comporta como un KV";
   } else {
@@ -103,10 +127,19 @@ export async function GET(request: Request) {
       "asi que el limite real es por instancia y no el documentado";
   }
 
+  const totalClaves = clavesDelLimitador
+    ? Object.values(clavesDelLimitador).reduce((suma, n) => suma + n, 0)
+    : 0;
+
   return NextResponse.json({
     ok: true,
     contexto,
     bindings,
     rateLimitKv: pruebaKv,
+    // Claves vivas del limitador AHORA MISMO. Si esto sale a cero justo despues de
+    // varias peticiones al login, el limitador no esta usando KV. Caducan solas por
+    // `expirationTtl`, asi que un cero en reposo es normal.
+    clavesDelLimitador,
+    totalClavesDelLimitador: totalClaves,
   });
 }
