@@ -9,7 +9,13 @@ import { getAdminSecurityConfig } from "@/lib/admin-config";
 import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, tooManyRequests } from "@/lib/rate-limit";
-import { checkSecondFactor, SECOND_FACTOR_MESSAGE, TOTP_SELECT } from "@/lib/totp-service";
+import { segundoFactorReciente } from "@/lib/totp.mjs";
+import {
+  checkSecondFactor,
+  requiresSecondFactor,
+  SECOND_FACTOR_MESSAGE,
+  TOTP_SELECT,
+} from "@/lib/totp-service";
 
 type AdminPayload = {
   username?: string;
@@ -106,12 +112,24 @@ export async function POST(request: Request) {
   // Segundo factor del administrador: con el 2FA activo, la licencia compartida
   // deja de ser suficiente por si sola. Si alguien la filtra, sin el dispositivo
   // del administrador no hay acceso (docs/SEGURIDAD_INTEGRAL.md 12.2).
+  //
+  // Excepcion, y solo una: si la sesion **acaba de demostrar** el segundo factor (al
+  // entrar, hace menos de cinco minutos), no se vuelve a pedir. El login y este paso
+  // son dos mitades de la misma entrada: pedir dos codigos seguidos era ceremonia, no
+  // seguridad. Pasada la ventana, se pide otra vez, que es cuando de verdad protege
+  // (cookie de sesion robada sin el dispositivo).
   const cuenta = await prisma.user.findUnique({
     where: { id: session.user.userId },
     select: TOTP_SELECT,
   });
 
-  const factor = await checkSecondFactor(cuenta, body.totpCode);
+  const yaDemostrado =
+    requiresSecondFactor(cuenta) &&
+    segundoFactorReciente(session.user.totpAt, Date.now());
+
+  const factor = yaDemostrado
+    ? ({ ok: true, viaRecovery: false } as const)
+    : await checkSecondFactor(cuenta, body.totpCode);
 
   if (!factor.ok) {
     await recordAudit({

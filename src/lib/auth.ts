@@ -14,6 +14,14 @@ type SessionPayload = {
   role: Role;
   /** `User.tokenVersion`: permite revocar la sesion. */
   tokenVersion: number;
+  /**
+   * Epoch ms en que se demostro el segundo factor al entrar, si se demostro.
+   *
+   * Sirve para no pedir el codigo dos veces seguidas: el login y la licencia
+   * administrativa son dos pasos de la misma entrada, y el segundo no aporta nada si
+   * el primero se acaba de verificar (ver `segundoFactorReciente` en `totp.mjs`).
+   */
+  totpAt?: number;
 };
 
 type AdminAccessPayload = {
@@ -50,6 +58,9 @@ export async function createSessionToken(payload: SessionPayload) {
     nombre: payload.nombre,
     role: payload.role,
     tv: payload.tokenVersion,
+    // Solo viaja si de verdad se verifico un codigo: una sesion sin segundo factor
+    // demostrado no puede saltarse el step-up de la licencia.
+    ...(payload.totpAt ? { totpAt: payload.totpAt } : {}),
     // Compatibilidad con el codigo que aun lee `isMember` del token.
     isMember: payload.role === "MEMBER",
   })
@@ -73,6 +84,8 @@ export async function verifySessionToken(token: string) {
     // coincide con la base de datos: se rechaza y se fuerza un nuevo login.
     tokenVersion: Number(payload.tv ?? -1),
     isMember: Boolean(payload.isMember),
+    /** 0 cuando la sesion no demuestra segundo factor. */
+    totpAt: Number(payload.totpAt ?? 0),
   };
 }
 

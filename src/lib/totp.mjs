@@ -325,3 +325,48 @@ export async function findRecoveryCodeIndex(code, hashes) {
 
   return encontrado;
 }
+
+/**
+ * Ventana en la que se da por bueno un segundo factor ya demostrado.
+ *
+ * Cinco minutos: lo que se tarda en entrar y validar la licencia. Es el margen para
+ * no pedir el mismo codigo dos veces seguidas, no para "recordar" la sesion.
+ */
+export const SEGUNDO_FACTOR_RECIENTE_SEGUNDOS = 300;
+
+/**
+ * ¿Se demostro el segundo factor hace tan poco que volver a pedirlo es ceremonia?
+ *
+ * El login y el step-up de la licencia son **dos pasos seguidos** de la misma entrada
+ * (separados por segundos). Con el 2FA activo, los dos pedian un codigo TOTP: dos
+ * codigos para lo mismo, y el segundo no aportaba nada, porque el primero se acaba de
+ * verificar en la misma sesion.
+ *
+ * Ojo con lo que **no** hace: no recuerda el dispositivo ni alarga la sesion. Pasada la
+ * ventana, el step-up vuelve a pedir el codigo. La proteccion que se conserva es la que
+ * importa: una cookie de sesion robada **despues** de ese margen no sirve para elevar
+ * privilegios sin el dispositivo.
+ *
+ * @param {unknown} totpAt epoch ms en que se verifico, o 0/null si no consta.
+ * @param {number} ahoraMs
+ * @param {number} [ventanaSegundos]
+ */
+export function segundoFactorReciente(totpAt, ahoraMs, ventanaSegundos) {
+  const verificado = Number(totpAt);
+  const ahora = Number(ahoraMs);
+  const ventana =
+    Number.isFinite(Number(ventanaSegundos)) && Number(ventanaSegundos) > 0
+      ? Number(ventanaSegundos)
+      : SEGUNDO_FACTOR_RECIENTE_SEGUNDOS;
+
+  if (!Number.isFinite(verificado) || verificado <= 0) return false;
+  if (!Number.isFinite(ahora)) return false;
+
+  const transcurrido = ahora - verificado;
+
+  // Un valor en el futuro solo puede venir de un reloj movido o de un token manipulado:
+  // no se da por bueno.
+  if (transcurrido < 0) return false;
+
+  return transcurrido <= ventana * 1000;
+}

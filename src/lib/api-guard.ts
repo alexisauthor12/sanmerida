@@ -55,6 +55,13 @@ export type SessionUser = {
   nombre: string;
   role: Role;
   tokenVersion: number;
+  /**
+   * Epoch ms en que esta sesion demostro el segundo factor, o 0 si no consta.
+   *
+   * Lo usa el step-up de la licencia para no pedir el mismo codigo que el login acaba
+   * de verificar (ver `segundoFactorReciente` en `totp.mjs`).
+   */
+  totpAt: number;
 };
 
 export type GuardResult =
@@ -148,6 +155,8 @@ export async function requireSession(): Promise<GuardResult> {
       nombre: cuenta.nombre,
       role: cuenta.role as Role,
       tokenVersion: cuenta.tokenVersion,
+      // Viene firmado en el token: se emitio cuando el segundo factor se verifico.
+      totpAt: payload.totpAt ?? 0,
     },
     licenseValidated: await hasValidLicense(cuenta.id, cuenta.tokenVersion),
   };

@@ -797,6 +797,18 @@ Decisiones:
 - Al activarse, `totpEnabled` pasa a `true` y el **login y la licencia
   administrativa** empiezan a exigir el codigo. El campo `requiresTotp` de la
   respuesta permite a la interfaz pedirlo sin revelar si la cuenta existe.
+- **Un solo codigo por entrada, no dos** (28/10/2026). El login y la licencia son dos
+  pasos seguidos de la misma entrada, y los dos pedian codigo: el segundo no aportaba
+  nada, porque el primero se acababa de verificar en la misma sesion. Ahora la sesion
+  firma `totpAt` (epoch ms) cuando el segundo factor se demuestra, y el step-up de la
+  licencia lo da por bueno **dentro de una ventana de 5 minutos** (`segundoFactorReciente`
+  en `totp.mjs`). Pasada la ventana vuelve a pedirlo, que es cuando de verdad protege:
+  una cookie de sesion robada **despues** de ese margen no sirve para elevar privilegios
+  sin el dispositivo.
+  - Lo que **no** hace: no recuerda el dispositivo ni alarga la sesion. Si el login no
+    demuestra segundo factor, no se firma `totpAt` y el step-up lo exige igual.
+  - Efecto practico: entrar al panel pasa de 2 codigos a 1, y luego 1 cada 4 h (lo que
+    dura el step-up de la licencia).
 - Un codigo incorrecto **cuenta como intento fallido** (7.4): probar codigos a ciegas
   acaba bloqueando la cuenta.
 - `AUTH_SECRET` no interviene: el secreto TOTP vive en la base, cifrado en transito.

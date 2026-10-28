@@ -125,13 +125,14 @@ type SessionUser = {
   tokenVersion: number;
 };
 
-function buildLoginResponse(user: SessionUser) {
+function buildLoginResponse(user: SessionUser, totpAt?: number) {
   return createSessionToken({
     sub: user.id,
     email: user.email,
     nombre: user.nombre,
     role: user.role,
     tokenVersion: user.tokenVersion,
+    totpAt,
   }).then((token) => {
     const response = NextResponse.json({
       ok: true,
@@ -403,11 +404,16 @@ export async function POST(request: Request) {
 
   await registrarAccesoCorrecto(user, request, portal);
 
-  return buildLoginResponse({
-    id: user.id,
-    email: user.email,
-    nombre: user.nombre,
-    role: user.role as Role,
-    tokenVersion: user.tokenVersion,
-  });
+  // Se anota que el segundo factor se acaba de demostrar, para que el step-up de la
+  // licencia no vuelva a pedir el mismo codigo treinta segundos despues.
+  return buildLoginResponse(
+    {
+      id: user.id,
+      email: user.email,
+      nombre: user.nombre,
+      role: user.role as Role,
+      tokenVersion: user.tokenVersion,
+    },
+    user.totpEnabled ? Date.now() : undefined,
+  );
 }

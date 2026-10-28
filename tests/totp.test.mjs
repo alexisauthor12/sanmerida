@@ -14,6 +14,8 @@ import {
   igualdadConstante,
   normalizeRecoveryCode,
   normalizeTotpCode,
+  SEGUNDO_FACTOR_RECIENTE_SEGUNDOS,
+  segundoFactorReciente,
   verifyTotpCode,
 } from "../src/lib/totp.mjs";
 
@@ -292,4 +294,73 @@ test("normalizeTotpCode solo devuelve vacio o exactamente 6 digitos", () => {
 
 test("TOTP_DIGITOS es 6, el valor que asumen las apps", () => {
   assert.equal(TOTP_DIGITOS, 6);
+});
+
+/**
+ * "No me pidas el mismo codigo dos veces seguidas".
+ *
+ * El login y el step-up de la licencia administrativa son dos pasos de la misma
+ * entrada. Con el 2FA activo, los dos pedian un codigo: dos codigos para lo mismo, y
+ * el segundo no aportaba nada porque el primero se acababa de verificar en la misma
+ * sesion. Ahora el segundo paso respeta ese margen — y **solo** ese margen: pasados
+ * cinco minutos vuelve a pedirlo, que es cuando de verdad protege.
+ */
+test("segundoFactorReciente da por bueno un codigo recien verificado", () => {
+  const ahora = 1_700_000_000_000;
+
+  assert.equal(segundoFactorReciente(ahora, ahora), true);
+  assert.equal(segundoFactorReciente(ahora - 1_000, ahora), true);
+  assert.equal(segundoFactorReciente(ahora - 60_000, ahora), true);
+  assert.equal(
+    segundoFactorReciente(ahora - SEGUNDO_FACTOR_RECIENTE_SEGUNDOS * 1000, ahora),
+    true,
+    "justo en el limite todavia vale",
+  );
+});
+
+test("segundoFactorReciente deja de valer pasado el margen", () => {
+  const ahora = 1_700_000_000_000;
+
+  assert.equal(
+    segundoFactorReciente(ahora - (SEGUNDO_FACTOR_RECIENTE_SEGUNDOS * 1000 + 1), ahora),
+    false,
+  );
+  assert.equal(segundoFactorReciente(ahora - 10 * 60_000, ahora), false);
+  assert.equal(segundoFactorReciente(ahora - 4 * 60 * 60_000, ahora), false);
+});
+
+test("segundoFactorReciente no acepta una marca ausente o imposible", () => {
+  const ahora = 1_700_000_000_000;
+
+  for (const valor of [0, null, undefined, "", "x", Number.NaN, -1]) {
+    assert.equal(
+      segundoFactorReciente(valor, ahora),
+      false,
+      `se dio por bueno con totpAt=${JSON.stringify(valor)}`,
+    );
+  }
+
+  // Una marca en el futuro solo sale de un reloj movido o de un token manipulado.
+  assert.equal(segundoFactorReciente(ahora + 1, ahora), false);
+  assert.equal(segundoFactorReciente(ahora + 60 * 60_000, ahora), false);
+});
+
+test("segundoFactorReciente admite otra ventana y cae a la de por defecto", () => {
+  const ahora = 1_700_000_000_000;
+
+  assert.equal(segundoFactorReciente(ahora - 90_000, ahora, 120), true);
+  assert.equal(segundoFactorReciente(ahora - 90_000, ahora, 30), false);
+
+  for (const ventana of [0, -1, Number.NaN, "x", null, undefined]) {
+    assert.equal(
+      segundoFactorReciente(ahora - 60_000, ahora, ventana),
+      true,
+      `con ventana=${JSON.stringify(ventana)} deberia usar la de por defecto`,
+    );
+    assert.equal(
+      segundoFactorReciente(ahora - 10 * 60_000, ahora, ventana),
+      false,
+      `con ventana=${JSON.stringify(ventana)} deberia usar la de por defecto`,
+    );
+  }
 });
