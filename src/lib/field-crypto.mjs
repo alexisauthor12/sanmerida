@@ -32,6 +32,37 @@ const IV_BYTES = 12;
 /** Contexto de derivacion: separa esta clave de cualquier otro uso del mismo secreto. */
 const CONTEXTO = "sanmerida/pii/v1";
 
+/**
+ * Cache de claves derivadas y de los datos asociados ya codificados.
+ *
+ * **Importante para el CPU del Worker.** Derivar la clave cuesta un SHA-256 y un
+ * `importKey` **por cada valor cifrado**. Al leer un expediente completo son 11 campos:
+ * 11 derivaciones que se repetian en cada fila. Medido: para 3 expedientes, la derivacion
+ * costaba entre 9 y 46 ms, mas que el propio descifrado.
+ *
+ * El Worker tiene un limite de CPU por peticion, y el panel de administrador lee todos los
+ * expedientes de golpe: ahi se junta todo. Con la cache, la derivacion se paga **una vez
+ * por instancia** en lugar de una vez por campo.
+ *
+ * El secreto no cambia dentro de un despliegue, asi que la cache es segura. Cada instancia
+ * del Worker tiene la suya, y como mucho guarda dos claves (la activa y la heredada).
+ */
+const clavesDerivadas = new Map();
+const datosAsociados = new Map();
+
+/** Codifica el nombre del campo una sola vez (se usa como dato asociado en cada llamada). */
+function aadDe(campo) {
+  const cacheado = datosAsociados.get(campo);
+
+  if (cacheado) return cacheado;
+
+  const codificado = new TextEncoder().encode(campo);
+
+  datosAsociados.set(campo, codificado);
+
+  return codificado;
+}
+
 function aBase64(bytes) {
   let binario = "";
 
@@ -52,7 +83,7 @@ function deBase64(texto) {
 }
 
 /**
- * Deriva una clave AES-256 del secreto, **con contexto propio**.
+ * Deriva una clave AES-256 del secreto, **con contexto propio y cacheada**.
  *
  * El contexto evita que la misma clave sirva para dos cosas distintas si alguien
  * reutiliza el secreto: la de aqui no es la que firma sesiones ni la que cifra las
@@ -62,13 +93,21 @@ function deBase64(texto) {
  * @returns {Promise<CryptoKey>}
  */
 async function derivarClave(secreto) {
+  const cacheada = clavesDerivadas.get(secreto);
+
+  if (cacheada) return cacheada;
+
   const material = new TextEncoder().encode(`${CONTEXTO}|${secreto}`);
   const resumen = await crypto.subtle.digest("SHA-256", material);
 
-  return crypto.subtle.importKey("raw", resumen, { name: "AES-GCM" }, false, [
+  const clave = await crypto.subtle.importKey("raw", resumen, { name: "AES-GCM" }, false, [
     "encrypt",
     "decrypt",
   ]);
+
+  clavesDerivadas.set(secreto, clave);
+
+  return clave;
 }
 
 /** ¿Este valor ya esta cifrado por nosotros? */
@@ -89,7 +128,7 @@ export async function encryptField(plano, secreto, campo = "") {
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
 
   const cifrado = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(campo) },
+    { name: "AES-GCM", iv, additionalData: aadDe(campo) },
     clave,
     new TextEncoder().encode(String(plano)),
   );
@@ -118,7 +157,7 @@ export async function decryptField(valor, secreto, campo = "") {
     const clave = await derivarClave(secreto);
 
     const abierto = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: deBase64(partes[0]), additionalData: new TextEncoder().encode(campo) },
+      { name: "AES-GCM", iv: deBase64(partes[0]), additionalData: aadDe(campo) },
       clave,
       deBase64(partes[1]),
     );
