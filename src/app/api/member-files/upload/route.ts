@@ -24,7 +24,7 @@ type AssetVariant = "NORMAL" | "SCANNED";
  * forma perezosa para que la ruta pueda subir el archivo aunque el procesado
  * de imagen no este disponible en el entorno.
  */
-type SharpFactory = typeof import("sharp");
+type SharpFactory = typeof import("sharp").default;
 
 async function loadSharp(): Promise<SharpFactory> {
   const sharpModule = await import("sharp");
@@ -440,7 +440,7 @@ async function tryBuildAutoSelfie(sourceBytes: Buffer) {
     .extract(crop)
     .resize(760, 980, { fit: "inside", withoutEnlargement: true })
     .modulate({ brightness: 1.01, saturation: 1.03 })
-    .sharpen(0.35)
+    .sharpen({ sigma: 0.35 })
     .jpeg({ quality: 94, mozjpeg: true })
     .toBuffer();
 }

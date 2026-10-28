@@ -20,7 +20,11 @@ export const runtime = "nodejs";
  * carga de forma perezosa para que la ruta devuelva un error controlado en vez
  * de romper la carga del modulo completo.
  */
-type SharpFactory = typeof import("sharp");
+/**
+ * En sharp 0.35 el modulo ya no es invocable directamente: la fabrica es el
+ * export por defecto. Se tipa desde ahi para que la firma siga siendo llamable.
+ */
+type SharpFactory = typeof import("sharp").default;
 
 let sharpFactoryPromise: Promise<SharpFactory> | null = null;
 
