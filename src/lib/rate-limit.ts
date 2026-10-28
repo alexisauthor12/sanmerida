@@ -51,10 +51,12 @@ async function getKv(): Promise<KvNamespace | null> {
     // el fallo, el efecto era **silencioso**: el limitador caia al contador en memoria
     // sin que nadie se enterara.
     //
-    // Comprobado en produccion: el namespace `RATE_LIMIT` estaba vacio despues de muchas
-    // peticiones, es decir, no se estaba usando. Con el limitador en memoria, cada
-    // instancia del Worker lleva su propia cuenta, asi que el limite real era varias
-    // veces el documentado.
+    // Aviso para quien venga despues: durante un tiempo se creyo que el KV no se usaba
+    // en produccion porque el namespace aparecia **vacio**. Era una lectura equivocada.
+    // Las claves del limitador llevan `expirationTtl` igual a la ventana (60-900 s), asi
+    // que mirar el namespace un rato despues da vacio aunque todo funcione. Para
+    // comprobar un binding hay que preguntar **desde dentro del Worker**:
+    // `/api/salud/bindings` (seccion 7.1).
     const { env } = await getCloudflareContext({ async: true });
     const kv = (env as typeof env & { RATE_LIMIT?: KvNamespace }).RATE_LIMIT;
 
