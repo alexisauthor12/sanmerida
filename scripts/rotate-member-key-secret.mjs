@@ -19,17 +19,21 @@
  * Al terminar, la verificacion es una lectura de prueba en el panel (Monitor de
  * cuotas -> credenciales) y `node scripts/check-storage-integrity.mjs`.
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { decryptMemberKey, encryptMemberKey } from "../src/lib/member-credentials.mjs";
 
+// Como el resto de scripts: los valores viven en `.env.local`. `dotenv/config` lee
+// **solo** `.env`, asi que cualquier secreto que este alli llegaria vacio sin avisar.
+loadEnv({ path: [".env.local", ".env"] });
+
 /**
- * `dotenv` solo lee `.env`, pero `AUTH_SECRET` vive en `.dev.vars` (el archivo que
- * carga `wrangler`). Sin esto, el procedimiento documentado no se puede seguir en
- * local. No se pisa nada que ya venga del entorno real.
+ * `.dev.vars` es el archivo que carga `wrangler`, y en local puede tener los mismos
+ * secretos. Se lee como **respaldo**: no pisa nada que ya venga del entorno ni de
+ * `.env.local`, que es lo que usa la aplicacion.
  */
 function cargarDevVars() {
   const ruta = path.join(process.cwd(), ".dev.vars");

@@ -13,9 +13,13 @@
  * Criterio de lectura: si en la ventana analizada **no aparece** `inline` en
  * `script-src` ni en `style-src`, la politica estricta se puede activar.
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+
+// Como el resto de scripts: los valores viven en `.env.local`. `dotenv/config` lee
+// **solo** `.env`, asi que cualquier secreto que este alli llegaria vacio sin avisar.
+loadEnv({ path: [".env.local", ".env"] });
 
 const args = process.argv.slice(2);
 const indiceDias = args.indexOf("--dias");

@@ -24,9 +24,13 @@
  *
  * El simulacro es el comportamiento por defecto: nada se borra sin `--apply`.
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+
+// Como el resto de scripts: los valores viven en `.env.local`. `dotenv/config` lee
+// **solo** `.env`, asi que cualquier secreto que este alli llegaria vacio sin avisar.
+loadEnv({ path: [".env.local", ".env"] });
 
 /** Acciones ligadas a la sesion: se conservan menos tiempo. */
 const ACCIONES_DE_SESION = new Set([

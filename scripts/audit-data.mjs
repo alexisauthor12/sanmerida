@@ -8,10 +8,15 @@
  *
  * Uso: node scripts/audit-data.mjs
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { existsSync, readdirSync } from "node:fs";
 import { Client } from "pg";
 import { dbSslFor } from "../src/lib/db-ssl.mjs";
+
+// Como el resto de scripts: los valores viven en `.env.local`. `dotenv/config` lee
+// **solo** `.env`, asi que cualquier secreto que este alli llegaria vacio sin avisar.
+// Es exactamente el fallo que dejo los respaldos sin cifrar.
+loadEnv({ path: [".env.local", ".env"] });
 
 const LOCAL_URL = process.env.LOCAL_DATABASE_URL ?? "postgresql://postgres:localdev@127.0.0.1:5432/sanmerida";
 const REMOTE_URL = process.env.DATABASE_URL;

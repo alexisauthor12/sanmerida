@@ -28,9 +28,14 @@
  * comprueba si su regla ya esta, y la anade. Si no puede leerlo, se niega a escribir
  * en vez de arriesgarse a borrar lo que ya hubiera.
  */
+import { config as loadEnv } from "dotenv";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+// Como el resto de scripts del proyecto: los valores viven en `.env.local`, no hay
+// que exportarlos a mano en cada terminal.
+loadEnv({ path: [".env.local", ".env"] });
 
 const APLICAR = process.argv.includes("--apply");
 
@@ -42,7 +47,14 @@ const EMAILS = (process.env.ACCESS_EMAILS ?? "")
   .map((correo) => correo.trim())
   .filter(Boolean);
 
-/** El token del entorno manda; si no hay, se usa el de `wrangler login`. */
+/**
+ * El token del entorno manda; si no hay, se usa el de `wrangler login`.
+ *
+ * Ojo con el segundo: el token de `wrangler login` (`cfoat_...`) **no sirve para la API
+ * REST** — responde `401 Invalid API Token` / `403 Invalid access token` (codigo 9109).
+ * Vale para `wrangler deploy` y para KV, y por eso puede dar la impresion de que
+ * funcionaria. Para DNS, reglas y WAF hace falta un token propio.
+ */
 function resolverToken() {
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
 
@@ -64,7 +76,30 @@ if (!TOKEN) {
   console.error(
     "Falta el token.\n" +
       "Crea uno en Cloudflare -> My Profile -> API Tokens con los permisos del encabezado\n" +
-      "y exportalo:  $env:CLOUDFLARE_API_TOKEN = \"...\"",
+      "y ponlo en `.env.local` como  CLOUDFLARE_API_TOKEN=...\n" +
+      '  (o exportalo:  $env:CLOUDFLARE_API_TOKEN = "...")\n',
+  );
+  process.exit(1);
+}
+
+// Se comprueba el token ANTES de intentar nada. Sin esto, un token invalido produce un
+// 403 en cada paso y parece un problema de permisos, cuando lo que pasa es que no sirve
+// ninguno. El token de `wrangler login` cae justo en este caso.
+const verificacion = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+  headers: { authorization: `Bearer ${TOKEN}` },
+  signal: AbortSignal.timeout(20000),
+})
+  .then((respuesta) => respuesta.json())
+  .catch(() => ({}));
+
+if (!verificacion?.success) {
+  console.error(
+    "El token no vale para la API de Cloudflare.\n" +
+      `  ${JSON.stringify(verificacion?.errors ?? {}).slice(0, 160)}\n\n` +
+      "Si empieza por `cfoat_` es el de `wrangler login`: ese solo sirve para desplegar y\n" +
+      "para KV, no para la API REST. Crea un token propio (Cloudflare -> My Profile ->\n" +
+      "API Tokens) con los permisos del encabezado de este script y ponlo en `.env.local`:\n" +
+      "  CLOUDFLARE_API_TOKEN=...\n",
   );
   process.exit(1);
 }

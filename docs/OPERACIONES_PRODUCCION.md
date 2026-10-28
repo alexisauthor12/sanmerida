@@ -731,6 +731,28 @@ delante no llega a ninguna parte. Arreglo, en la zona de Cloudflare:
 Con la zona ya en Cloudflare y el dominio sirviendo el Worker, **el runbook del WAF y de
 Access (9.8) sí es aplicable**: solo hay que sustituir `TU-DOMINIO` por `sanmeridajz.com`.
 
+**Se puede automatizar:** `npm run cf:configurar` hace los tres pasos (registro, redirección
+y reglas WAF) y, por defecto, solo **simula**. Necesita un token propio en
+`CLOUDFLARE_API_TOKEN`.
+
+> **⚠️ El token de `wrangler login` NO sirve para esto** (comprobado el 28/10/2026). Ese
+> token (empieza por `cfoat_`) responde `401 Invalid API Token` / `403 Invalid access token`
+> (código `9109`) contra la API REST, aunque **sí** valga para `wrangler deploy` y para
+> `wrangler kv` — y por eso engaña: parece que hay credenciales cuando no las hay.
+>
+> Antes, el script caía a ese token y el resultado era un `403` en **cada** paso, que se lee
+> como «faltan permisos» cuando lo que pasa es que el token no vale para nada. Ahora el
+> script **verifica el token con `/user/tokens/verify` antes de intentar nada** y lo dice
+> claro.
+>
+> El token propio se pone en `.env.local` como `CLOUDFLARE_API_TOKEN=...` (el script ya lee
+> ese archivo, como el resto). Permisos: `Zone → DNS → Edit`, `Zone → Config Rules → Edit`,
+> `Zone → Zone WAF → Edit`, `Zone → Zone → Read`.
+
+**Estado al 28/10/2026:** `www.sanmeridajz.com` **no resuelve** (HTTP `000`), el apex
+responde `200`. Falta el registro: es el único paso manual pendiente, y está bloqueado
+únicamente por el token.
+
 
 
 ### 9.11 Prueba de intrusión automatizada
@@ -898,6 +920,42 @@ no basta: hay que llegar al panel.
 >
 > En `.env.local` el hash va con los `$` **escapados** (`\$2b\$12\$...`): Next pasa los
 > valores por `dotenv-expand` y sin el escape el hash llega vacío. El script ya lo hace.
+
+### 9.17 Eliminar una cuenta de usuario
+
+```powershell
+node scripts/eliminar-usuario.mjs --email viejo@dominio.com             # simulacro
+node scripts/eliminar-usuario.mjs --email viejo@dominio.com --apply
+```
+
+**Qué se borra y qué no.** Esto es lo importante y conviene tenerlo claro antes de tocar
+nada:
+
+| Se borra | Se conserva |
+|---|---|
+| La fila de `User`: correo, contraseña, 2FA y versión de sesión | El **expediente** (`MemberProfile`): su `userId` queda a `NULL` |
+| | La **auditoría** (`AuditLog`): `actorUserId` queda a `NULL`, pero `actorEmail` y `actorRole` están congelados en cada registro |
+
+Los datos de un miembro son **suyos**, no de la cuenta: borrarlos por quitar un acceso
+sería destruir información de negocio. El expediente sigue ahí, solo deja de estar
+vinculado a una cuenta. Y la auditoría sigue siendo legible y atribuible, que es
+justamente para lo que se congelaron esos dos campos.
+
+**Salvaguardas** (el script se niega a borrar):
+
+- si es el **último `ADMIN`** de la base: dejaría el panel sin acceso;
+- si su correo es el de la cuenta activa (`ADMIN_ACCOUNT_EMAIL`), que es la que se usa
+  para entrar;
+- si tiene expediente con documentos o cuotas, salvo `--con-expediente`.
+
+Antes de borrar guarda la fila completa en `backups/usuario-eliminado-<fecha>.json`, por si
+hay que restaurarla.
+
+**Caso real (28/10/2026):** se eliminó `admin@sanmerida.com`, una cuenta `ADMIN` de las
+pruebas iniciales que **nunca se usó** (`lastLoginAt` a `null`, 0 registros de auditoría,
+sin expediente). Quedó `sanmeridaadmin@gmail.com` como único administrador, y se comprobó
+que sigue entrando (`200`).
+
 
 ## 10) Procedimiento de incidentes de seguridad
 

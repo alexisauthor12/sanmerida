@@ -16,9 +16,13 @@
  * O en un solo paso, junto con el esquema:
  *   npm run db:security:migrate
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+
+// Como el resto de scripts: los valores viven en `.env.local`. `dotenv/config` lee
+// **solo** `.env`, asi que cualquier secreto que este alli llegaria vacio sin avisar.
+loadEnv({ path: [".env.local", ".env"] });
 
 const apply = process.argv.includes("--apply");
 
