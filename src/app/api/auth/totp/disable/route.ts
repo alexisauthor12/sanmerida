@@ -1,5 +1,4 @@
 import bcrypt from "bcryptjs";
-import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/api-guard";
 import { recordAudit } from "@/lib/audit";
@@ -78,16 +77,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: SECOND_FACTOR_MESSAGE }, { status: 401 });
   }
 
-  await prisma.user.update({
-    where: { id: cuenta.id },
-    data: {
-      totpEnabled: false,
-      totpSecret: null,
-      totpConfirmedAt: null,
-      // `DbNull` es la forma correcta de dejar el JSON en NULL desde Prisma.
-      totpRecoveryCodes: Prisma.DbNull,
-    },
-  });
+  // Los codigos de recuperacion son una columna `jsonb`. `Prisma.DbNull` **no** deja
+  // la columna en NULL de verdad: guarda un objeto `{"set": null}` y los hashes se
+  // quedan dentro. Comprobado en produccion (28/10/2026) al desactivar el segundo
+  // factor: la columna acababa con `{"set": null}` en vez de NULL.
+  //
+  // No es explotable —con `totpEnabled` en false no se consultan— pero es sucio y
+  // contradice lo que dice el propio codigo, asi que se limpia con SQL, que no tiene
+  // ambiguedad.
+  await prisma.$executeRaw`
+    UPDATE "User"
+       SET "totpEnabled"       = false,
+           "totpSecret"        = NULL,
+           "totpConfirmedAt"   = NULL,
+           "totpRecoveryCodes" = NULL,
+           "updatedAt"         = now()
+     WHERE "id" = ${cuenta.id}
+  `;
 
   await recordAudit({
     action: "TOTP_DISABLED",

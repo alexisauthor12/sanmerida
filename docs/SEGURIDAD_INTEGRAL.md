@@ -812,6 +812,13 @@ Decisiones:
 - Un codigo incorrecto **cuenta como intento fallido** (7.4): probar codigos a ciegas
   acaba bloqueando la cuenta.
 - `AUTH_SECRET` no interviene: el secreto TOTP vive en la base, cifrado en transito.
+- **La baja limpia con SQL, no con `Prisma.DbNull`** (28/10/2026). `totpRecoveryCodes`
+  es una columna `jsonb` y `Prisma.DbNull` **no** la deja en NULL: guardaba un objeto
+  `{"set": null}` y los hashes de los codigos se quedaban dentro. Se descubrio
+  desactivando el segundo factor en produccion y mirando la fila. No era explotable
+  (con `totpEnabled` en false no se consultan), pero contradecia lo que decia el propio
+  codigo. `POST /api/auth/totp/disable` ahora hace un `UPDATE` con `$executeRaw` y deja
+  las cuatro columnas en NULL de verdad.
 
 ---
 
