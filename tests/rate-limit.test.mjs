@@ -6,6 +6,7 @@ import {
   combinarResultados,
   evaluarVentana,
   reglasDe,
+  siguienteConteo,
 } from "../src/lib/rate-limit-rules.mjs";
 
 test("la tabla de reglas tiene los endpoints esperados", () => {
@@ -107,4 +108,133 @@ test("combinarResultados permite cuando no hay reglas", () => {
 
   assert.equal(resultado.allowed, true);
   assert.equal(resultado.bloqueadoPor, null);
+});
+
+/**
+ * Ventana FIJA del contador compartido (Cloudflare KV).
+ *
+ * Nace de un fallo real: el backend de KV guardaba el contador y dejaba que el
+ * `expirationTtl` llevara el final de la ventana. Como cada `put` reinicia ese TTL,
+ * la ventana se alargaba con **cada intento**: quien siguiera probando no salia
+ * nunca del bloqueo, y un tercero podia mantener bloqueada la cuenta de otra
+ * persona martilleandola (la regla por identidad va contra el correo enviado).
+ *
+ * El contador en memoria siempre se comporto como ventana fija. Estos casos fijan
+ * que los dos backends coincidan.
+ */
+test("siguienteConteo abre la ventana en el primer intento", () => {
+  const ahora = 1_700_000_000_000;
+  const { conteo, expiraMs, restanteSegundos } = siguienteConteo({
+    crudo: null,
+    ahoraMs: ahora,
+    ventanaSegundos: 900,
+  });
+
+  assert.equal(conteo, 1);
+  assert.equal(expiraMs, ahora + 900_000);
+  assert.equal(restanteSegundos, 900);
+});
+
+test("siguienteConteo NO mueve el final de la ventana al seguir intentando", () => {
+  const inicio = 1_700_000_000_000;
+  const ventanaSegundos = 900;
+
+  // Primer intento: abre la ventana.
+  let estado = siguienteConteo({ crudo: null, ahoraMs: inicio, ventanaSegundos });
+  const expiraEsperado = estado.expiraMs;
+
+  assert.equal(expiraEsperado, inicio + 900_000);
+
+  // Diez intentos mas, espaciados: el conteo sube y el final NO se mueve. Si se
+  // moviera, el bloqueo se alargaria solo por insistir.
+  for (let i = 1; i <= 10; i += 1) {
+    const ahora = inicio + i * 1000;
+
+    estado = siguienteConteo({
+      crudo: `${estado.conteo}|${estado.expiraMs}`,
+      ahoraMs: ahora,
+      ventanaSegundos,
+    });
+
+    assert.equal(estado.conteo, i + 1, `el conteo no subio en el intento ${i}`);
+    assert.equal(estado.expiraMs, expiraEsperado, `la ventana se movio en el intento ${i}`);
+    assert.ok(
+      estado.restanteSegundos <= ventanaSegundos,
+      "el TTL no puede superar la ventana",
+    );
+  }
+
+  assert.equal(estado.conteo, 11);
+});
+
+test("siguienteConteo reinicia el conteo cuando la ventana vence", () => {
+  const inicio = 1_700_000_000_000;
+  const expira = inicio + 900_000;
+
+  // Justo despues del vencimiento: cuenta nueva y ventana nueva.
+  const { conteo, expiraMs } = siguienteConteo({
+    crudo: `7|${expira}`,
+    ahoraMs: expira + 1,
+    ventanaSegundos: 900,
+  });
+
+  assert.equal(conteo, 1);
+  assert.equal(expiraMs, expira + 1 + 900_000);
+});
+
+test("siguienteConteo respeta un valor suelto de la version anterior", () => {
+  // Antes se guardaba solo el numero. No se tira el conteo: se le da ventana nueva.
+  const ahora = 1_700_000_000_000;
+  const { conteo, expiraMs } = siguienteConteo({
+    crudo: "7",
+    ahoraMs: ahora,
+    ventanaSegundos: 300,
+  });
+
+  assert.equal(conteo, 8);
+  assert.equal(expiraMs, ahora + 300_000);
+});
+
+test("siguienteConteo aguanta basura sin romperse ni alargar la ventana", () => {
+  const ahora = 1_700_000_000_000;
+
+  for (const crudo of ["", "  ", "abc", "-3", "1|", "|2", "NaN", undefined, null]) {
+    const { conteo, expiraMs, restanteSegundos } = siguienteConteo({
+      crudo,
+      ahoraMs: ahora,
+      ventanaSegundos: 60,
+    });
+
+    assert.ok(Number.isFinite(conteo), `conteo no finito con crudo=${JSON.stringify(crudo)}`);
+    assert.ok(conteo >= 1, `conteo por debajo de 1 con crudo=${JSON.stringify(crudo)}`);
+    assert.equal(expiraMs, ahora + 60_000);
+    assert.equal(restanteSegundos, 60);
+  }
+});
+
+test("siguienteConteo usa 60 s si la ventana llega invalida", () => {
+  const ahora = 1_700_000_000_000;
+
+  for (const ventana of [0, -5, Number.NaN, "x", null]) {
+    const { expiraMs, restanteSegundos } = siguienteConteo({
+      crudo: null,
+      ahoraMs: ahora,
+      ventanaSegundos: ventana,
+    });
+
+    assert.equal(expiraMs, ahora + 60_000);
+    assert.equal(restanteSegundos, 60);
+  }
+});
+
+test("siguienteConteo mantiene el TTL por encima del minimo de Cloudflare KV", () => {
+  // KV exige al menos 60 s. En el ultimo tramo de la ventana quedarian menos.
+  const expira = 1_700_000_900_000;
+  const { restanteSegundos } = siguienteConteo({
+    crudo: `9|${expira}`,
+    ahoraMs: expira - 5_000,
+    ventanaSegundos: 900,
+  });
+
+  assert.equal(restanteSegundos, 60);
 });

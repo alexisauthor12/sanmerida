@@ -654,6 +654,23 @@ Object; el KV es suficiente para contadores de ventana fija.
 
 ### 7.2 `src/lib/rate-limit.ts` (nuevo)
 
+> **Ventana FIJA de verdad (corregido el 28/10/2026).** El backend de KV guardaba el
+> contador y dejaba que el `expirationTtl` llevara el final de la ventana. Como cada
+> `put` **reinicia** ese TTL, la ventana se alargaba con cada intento: quien siguiera
+> probando no salia nunca del bloqueo, y un tercero podia mantener bloqueada la cuenta
+> de otra persona martilleandola (la regla por identidad va contra el correo enviado,
+> asi que no hace falta acertar la contrasena ni venir de una IP concreta).
+>
+> El contador en memoria (`backendMemoria`) **si** se comportaba como ventana fija: los
+> dos backends no coincidian, y las pruebas locales pasaban porque usan memoria. Ahora
+> el final de la ventana viaja dentro del valor (`"<conteo>|<epochMs>"`), la logica vive
+> en `siguienteConteo()` —pura, en `rate-limit-rules.mjs`, para poder probarla sin KV ni
+> red— y hay siete casos que fijan el comportamiento, incluido el que impide que la
+> ventana se mueva al insistir.
+>
+> Se detecto al intentar verificar el punto 6: tras agotar el cupo del login, el bloqueo
+> no se levantaba por mucho que se esperase, porque cada reintento lo renovaba.
+
 ```ts
 export type RateLimitRule = {
   key: string;            // "login:ip" | "login:user" | "license:ip" ...

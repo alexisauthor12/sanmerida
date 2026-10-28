@@ -125,6 +125,66 @@ export function evaluarVentana({ usados, limite, ventanaSegundos }) {
 }
 
 /**
+ * Siguiente conteo de una ventana **fija**, a partir del valor guardado.
+ *
+ * El valor guardado es `"<conteo>|<epochMs en que expira la ventana>"`.
+ *
+ * Existe porque confiar el final de la ventana al `expirationTtl` del KV no vale:
+ * cada `put` lo reinicia, asi que la ventana se alargaria con cada intento. Con
+ * eso, quien siguiera probando no saldria nunca del bloqueo, y un tercero podria
+ * mantener bloqueada la cuenta de otra persona martilleandola desde cualquier IP
+ * (la regla por identidad va contra el correo enviado). El contador en memoria ya
+ * se comportaba como ventana fija: los dos backends tienen que coincidir.
+ *
+ * Se acepta tambien un valor suelto de una version anterior (`"7"`): se respeta el
+ * conteo y se le da ventana nueva desde ahora, en vez de perderlo.
+ *
+ * @param {{ crudo?: string | null, ahoraMs: number, ventanaSegundos: number }} params
+ * @returns {{ conteo: number, expiraMs: number, restanteSegundos: number }}
+ */
+export function siguienteConteo({ crudo, ahoraMs, ventanaSegundos }) {
+  const ventana = Number(ventanaSegundos);
+  const segura = Number.isFinite(ventana) && ventana > 0 ? ventana : 60;
+  const ahora = Number(ahoraMs);
+
+  const partes = /^(\d+)\|(\d+)$/.exec(String(crudo ?? ""));
+  const legado = partes ? Number.NaN : Number(crudo);
+
+  let conteo;
+  let expiraMs;
+
+  if (partes) {
+    const expiraPrevio = Number(partes[2]);
+
+    if (expiraPrevio <= ahora) {
+      // La ventana vencio: cuenta nueva y ventana nueva.
+      conteo = 1;
+      expiraMs = ahora + segura * 1000;
+    } else {
+      // Dentro de la ventana: sube el conteo y el final NO se mueve.
+      conteo = Number(partes[1]) + 1;
+      expiraMs = expiraPrevio;
+    }
+  } else if (Number.isFinite(legado) && legado >= 0) {
+    // Valor suelto de una version anterior. Si la clave sigue ahi, la ventana no
+    // habia vencido: se respeta el conteo (un 10 antiguo sigue bloqueando) y se le
+    // abre ventana nueva desde ahora. Es un efecto de una sola vez, al migrar.
+    conteo = legado + 1;
+    expiraMs = ahora + segura * 1000;
+  } else {
+    // Sin valor utilizable: se abre la ventana.
+    conteo = 1;
+    expiraMs = ahora + segura * 1000;
+  }
+
+  // La clave caduca justo con la ventana: ni antes (se perderia el conteo) ni
+  // despues (se acumularia basura). El minimo de Cloudflare KV son 60 s.
+  const restanteSegundos = Math.max(60, Math.ceil((expiraMs - ahora) / 1000));
+
+  return { conteo, expiraMs, restanteSegundos };
+}
+
+/**
  * Combina los resultados de varias reglas: gana la mas restrictiva.
  *
  * @param {Array<{ allowed: boolean, remaining: number, retryAfterSeconds: number, key?: string }>} resultados

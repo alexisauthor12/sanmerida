@@ -1,6 +1,6 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
-import { combinarResultados, evaluarVentana, reglasDe } from "@/lib/rate-limit-rules.mjs";
+import { combinarResultados, evaluarVentana, reglasDe, siguienteConteo } from "@/lib/rate-limit-rules.mjs";
 import { extractClientIp } from "@/lib/request-info.mjs";
 
 /**
@@ -83,12 +83,19 @@ function backendDe(kv: KvNamespace | null): Backend {
 
   return {
     async incrementar(clave, ventanaSegundos) {
-      const previo = Number(await kv.get(clave)) || 0;
-      const siguiente = previo + 1;
+      // El final de la ventana viaja DENTRO del valor, no en el `expirationTtl`:
+      // cada `put` reinicia ese TTL, asi que la ventana se alargaria con cada
+      // intento y quien siguiera probando no saldria nunca del bloqueo. La logica
+      // vive en `rate-limit-rules.mjs` para poder probarla sin KV ni red.
+      const { conteo, expiraMs, restanteSegundos } = siguienteConteo({
+        crudo: await kv.get(clave),
+        ahoraMs: Date.now(),
+        ventanaSegundos,
+      });
 
-      await kv.put(clave, String(siguiente), { expirationTtl: Math.max(60, ventanaSegundos) });
+      await kv.put(clave, `${conteo}|${expiraMs}`, { expirationTtl: restanteSegundos });
 
-      return siguiente;
+      return conteo;
     },
   };
 }
