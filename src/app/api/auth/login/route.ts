@@ -205,7 +205,18 @@ function getDevelopmentFallbackUser(params: {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as LoginPayload;
+  // Un cuerpo que no es JSON (peticion manipulada, cliente roto) devuelve 400, no 500.
+  // Antes reventaba aqui sin control y el error se confundia con una caida de la base:
+  // el mensaje que veia el usuario era "verifica DATABASE_URL", que no tenia nada que ver.
+  const body = (await request.json().catch(() => null)) as LoginPayload | null;
+
+  if (!body || typeof body !== "object") {
+    return NextResponse.json(
+      { ok: false, message: "La petición no tiene el formato esperado." },
+      { status: 400 },
+    );
+  }
+
   const portal = body.portal ?? "account";
 
   const username = body.username?.trim().toLowerCase() ?? "";

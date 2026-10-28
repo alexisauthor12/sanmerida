@@ -44,15 +44,38 @@ const backendMemoria: Backend = {
 };
 
 /** Binding de KV si el entorno lo expone; null en local. */
-function getKv(): KvNamespace | null {
+async function getKv(): Promise<KvNamespace | null> {
   try {
-    const { env } = getCloudflareContext();
+    // Variante **asincrona** a proposito. La sincrona lee de un almacen que no siempre
+    // esta disponible y, cuando falla, devuelve un entorno vacio. Como aqui se captura
+    // el fallo, el efecto era **silencioso**: el limitador caia al contador en memoria
+    // sin que nadie se enterara.
+    //
+    // Comprobado en produccion: el namespace `RATE_LIMIT` estaba vacio despues de muchas
+    // peticiones, es decir, no se estaba usando. Con el limitador en memoria, cada
+    // instancia del Worker lleva su propia cuenta, asi que el limite real era varias
+    // veces el documentado.
+    const { env } = await getCloudflareContext({ async: true });
     const kv = (env as typeof env & { RATE_LIMIT?: KvNamespace }).RATE_LIMIT;
 
     return kv && typeof kv.get === "function" ? kv : null;
   } catch {
     return null;
   }
+}
+
+/** Aviso de que el limite no se comparte, para que no vuelva a pasar inadvertido. */
+let avisoSinKvMostrado = false;
+
+function avisarSinKv() {
+  if (avisoSinKvMostrado || process.env.NODE_ENV === "development") return;
+
+  avisoSinKvMostrado = true;
+
+  console.error(
+    "[rate-limit] El binding RATE_LIMIT no esta disponible: el limite se aplica por " +
+      "instancia, no de forma compartida. Revisa la configuracion del Worker.",
+  );
 }
 
 function backendDe(kv: KvNamespace | null): Backend {
@@ -100,7 +123,11 @@ export async function checkRateLimit(
     return { allowed: true, retryAfterSeconds: 0, bloqueadoPor: null };
   }
 
-  const backend = backendDe(getKv());
+  const kv = await getKv();
+
+  if (!kv) avisarSinKv();
+
+  const backend = backendDe(kv);
 
   try {
     const resultados = [];
