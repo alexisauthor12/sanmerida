@@ -696,7 +696,7 @@ Estado comprobado:
 | Respuesta | `200`, `Server: cloudflare`, `x-opennext: 1` |
 | Cabeceras | Las 9 presentes (HSTS, CSP con `report-uri /api/csp-report`, …) |
 | Prueba de intrusión | **19/19** casos automáticos OK |
-| `www.sanmeridajz.com` | **NO EXISTE** (sin registro A ni CNAME) |
+| `www.sanmeridajz.com` | **NO EXISTE** (sin registro A ni CNAME) — **pendiente a propósito**, ver más abajo |
 
 Y estos **no** son de este proyecto, para no volver a confundirse:
 
@@ -749,9 +749,18 @@ y reglas WAF) y, por defecto, solo **simula**. Necesita un token propio en
 > ese archivo, como el resto). Permisos: `Zone → DNS → Edit`, `Zone → Config Rules → Edit`,
 > `Zone → Zone WAF → Edit`, `Zone → Zone → Read`.
 
-**Estado al 28/10/2026:** `www.sanmeridajz.com` **no resuelve** (HTTP `000`), el apex
-responde `200`. Falta el registro: es el único paso manual pendiente, y está bloqueado
-únicamente por el token.
+**Estado al 28/10/2026:** `www.sanmeridajz.com` **no resuelve** (HTTP `000`); el apex
+responde `200`.
+
+> **Decisión del 28/10/2026: se deja pendiente a propósito.** No se toca el DNS por ahora.
+> Está todo listo para hacerlo en cualquier momento — el script, el runbook de arriba y los
+> permisos documentados —, así que retomarlo es una sola orden. Lo que falta es únicamente
+> un token propio de Cloudflare (`Zone → DNS → Edit` y `Zone → Zone → Read`, más
+> `Config Rules → Edit` para la redirección).
+>
+> Impacto de no tenerlo: quien escriba `www.sanmeridajz.com` no llega a ninguna parte. El
+> dominio correcto funciona con y sin `www` escrito en la barra. No afecta a la seguridad
+> ni a los datos; es alcance de marca.
 
 
 
