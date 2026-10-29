@@ -136,6 +136,12 @@ export default function Home() {
   const [pausarVideos, setPausarVideos] = useState(false);
   const [catalogVideoOpen, setCatalogVideoOpen] = useState<{ titulo: string; src: string } | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  /**
+   * Menu de movil. Hasta ahora, por debajo de `md` la cabecera escondia la navegacion
+   * y el bloque de cuenta (`hidden ... md:flex`) y **no habia nada en su lugar**: desde
+   * el telefono no se podia ni entrar ni navegar, solo se veia el logo.
+   */
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
@@ -207,6 +213,7 @@ export default function Home() {
   const [fraseActiva, setFraseActiva] = useState(0);
   const carruselRef = useRef<HTMLDivElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
   const catalogSectionRef = useRef<HTMLDivElement>(null);
   const [catalogSectionInView, setCatalogSectionInView] = useState(false);
   const paymentSectionRef = useRef<HTMLDivElement>(null);
@@ -246,19 +253,34 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const closeMenuOnOutsideClick = (event: MouseEvent) => {
-      const menuContainer = accountMenuRef.current;
-      if (!menuContainer) return;
-
+    const closeMenuOnOutsideClick = (event: Event) => {
       const target = event.target;
-      if (target instanceof Node && !menuContainer.contains(target)) {
+
+      if (!(target instanceof Node)) return;
+
+      const menuContainer = accountMenuRef.current;
+
+      if (menuContainer && !menuContainer.contains(target)) {
         setAccountMenuOpen(false);
+      }
+
+      // El menu de movil se cierra igual: al tocar fuera, y tambien al tocar el boton
+      // que lo abre (que queda fuera del panel).
+      const mobileContainer = mobileMenuRef.current;
+
+      if (mobileContainer && !mobileContainer.contains(target)) {
+        setMobileMenuOpen(false);
       }
     };
 
     document.addEventListener("mousedown", closeMenuOnOutsideClick);
+    // En tactil `mousedown` puede no llegar; `touchstart` si.
+    document.addEventListener("touchstart", closeMenuOnOutsideClick);
 
-    return () => document.removeEventListener("mousedown", closeMenuOnOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", closeMenuOnOutsideClick);
+      document.removeEventListener("touchstart", closeMenuOnOutsideClick);
+    };
   }, []);
 
   useEffect(() => {
@@ -366,6 +388,7 @@ export default function Home() {
 
   const openAdminModal = () => {
     setAccountMenuOpen(false);
+    setMobileMenuOpen(false);
     setAdminModalOpen(true);
     setAdminMessage("");
   };
@@ -494,7 +517,7 @@ export default function Home() {
         <div className="absolute inset-0 bg-black/30" />
 
         <div className="relative z-10 flex min-h-screen flex-col px-6 sm:px-10 lg:px-16">
-          <header className="flex items-center justify-between py-7 sm:py-8">
+          <header className="relative flex items-center justify-between py-7 sm:py-8">
             <a
               href="#"
               className="flex items-center gap-3"
@@ -575,6 +598,111 @@ export default function Home() {
                     Acceso Admin
                   </button>
                 </div>
+              ) : null}
+            </div>
+
+            {/*
+              Menu de movil. Antes **no existia**: por debajo de `md` la navegacion y el
+              bloque de cuenta se esconden (`hidden ... md:flex`) y no habia nada en su
+              lugar, asi que desde el telefono solo se veia el logo: ni entrar, ni
+              registrarse, ni navegar. Esto es lo que lo arregla.
+            */}
+            <div ref={mobileMenuRef} className="md:hidden">
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen((prev) => !prev)}
+                aria-label={mobileMenuOpen ? "Cerrar menú" : "Abrir menú"}
+                aria-expanded={mobileMenuOpen}
+                aria-controls="menu-movil"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-white/35 bg-white/5 text-white transition-colors duration-300 hover:bg-white/10"
+              >
+                {mobileMenuOpen ? (
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    className="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                  >
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                ) : (
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 24 24"
+                    className="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                  >
+                    <path d="M4 7h16M4 12h16M4 17h16" />
+                  </svg>
+                )}
+              </button>
+
+              {mobileMenuOpen ? (
+                <nav
+                  id="menu-movil"
+                  aria-label="Menú principal"
+                  className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 rounded-2xl border border-white/20 bg-zinc-950/95 p-2 shadow-2xl backdrop-blur-md"
+                >
+                  {[
+                    { href: "#modelos", texto: "Modelos" },
+                    { href: "#nosotros", texto: "Nosotros" },
+                    { href: "#metodos-pago", texto: "Métodos de Pago" },
+                    { href: "#ubicacion", texto: "Ubicación" },
+                    { href: "#contacto", texto: "Contacto" },
+                  ].map((enlace) => (
+                    <a
+                      key={enlace.href}
+                      href={enlace.href}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="block rounded-lg px-3 py-3 text-sm font-light tracking-[0.06em] text-white/90 transition-colors duration-300 hover:bg-white/10 hover:text-white"
+                    >
+                      {enlace.texto}
+                    </a>
+                  ))}
+
+                  <div className="my-2 h-px bg-white/15" />
+
+                  <Link
+                    href="/login"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block rounded-lg px-3 py-3 text-sm font-light text-white/90 transition hover:bg-white/10"
+                  >
+                    Gestionar mi cuenta
+                  </Link>
+                  <Link
+                    href="/member-login"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block rounded-lg px-3 py-3 text-sm font-light text-white/90 transition hover:bg-white/10"
+                  >
+                    Administrar mis cuentas
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      openAdminModal();
+                    }}
+                    className="block w-full rounded-lg px-3 py-3 text-left text-sm font-medium tracking-[0.04em] text-emerald-300 transition hover:bg-emerald-500/10 hover:text-emerald-200"
+                  >
+                    Acceso Admin
+                  </button>
+
+                  <div className="my-2 h-px bg-white/15" />
+
+                  <Link
+                    href="/register"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block rounded-lg border border-white/70 px-3 py-3 text-center text-sm font-medium tracking-[0.06em] text-white transition-colors duration-300 hover:bg-white/10"
+                  >
+                    Ingresa al TEAM SAN
+                  </Link>
+                </nav>
               ) : null}
             </div>
           </header>
