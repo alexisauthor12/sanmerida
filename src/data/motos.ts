@@ -77,7 +77,7 @@ export const MOTOS: Moto[] = [
     descripcion: "Equilibrio entre estética vintage y rendimiento para uso diario.",
     descripcionCompleta:
       "La Owen 200S destaca por su diseño clásico y su manejo versátil. Es una alternativa ideal para quienes buscan identidad de marca, confiabilidad y una experiencia de conducción placentera.",
-    imagen: "/Owen%20200S.png",
+    imagen: "/owen-200s.png",
     categoria: "Classic",
     motor: "200cc 4T",
     transmision: "Mecánica 5 velocidades",

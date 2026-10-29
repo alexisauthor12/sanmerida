@@ -65,7 +65,7 @@ export default function PromoCarousel() {
                 }`}
               >
                 <div className="mb-6 flex items-center gap-4">
-                  <Image src="/logo1.png" alt="San Mérida Logo" width={50} height={50} className="w-12 h-auto opacity-80" />
+                  <Image src="/logominimal.png" alt="San Mérida Logo" width={50} height={50} className="w-12 h-auto opacity-80" />
                   <span className="text-sm font-bold uppercase tracking-[0.2em] text-white/60">
                     San Mérida
                   </span>
