@@ -32,12 +32,12 @@ export type Moto = {
 
 export const MOTOS: Moto[] = [
   {
-    slug: "bera-tocialista",
-    nombre: "Bera Tocialista",
+    slug: "bera-socialista",
+    nombre: "Bera Socialista",
     marca: "Bera",
     descripcion: "Presencia clásica y conducción cómoda para el día a día.",
-    descripcionCompleta: "La Bera Tocialista apuesta por una línea clásica con acabados cuidados y una postura de manejo relajada. Pensada para quien hace recorridos urbanos todos los días.",
-    imagen: "/catalogo/bera-tocialista.webp",
+    descripcionCompleta: "La Bera Socialista apuesta por una línea clásica con acabados cuidados y una postura de manejo relajada. Pensada para quien hace recorridos urbanos todos los días.",
+    imagen: "/catalogo/bera-socialista.webp",
     categoria: "Urbana",
     motor: "4T",
     transmision: "Mecánica",

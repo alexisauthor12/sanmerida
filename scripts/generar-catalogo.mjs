@@ -13,9 +13,9 @@ import { readFileSync, writeFileSync } from "node:fs";
  */
 const MODELOS = [
   // --- BERA -----------------------------------------------------------------
-  ["bera-tocialista", "Bera Tocialista", "Urbana", "4T",
+  ["bera-socialista", "Bera Socialista", "Urbana", "4T",
     "Presencia clásica y conducción cómoda para el día a día.",
-    "La Bera Tocialista apuesta por una línea clásica con acabados cuidados y una postura de manejo relajada. Pensada para quien hace recorridos urbanos todos los días."],
+    "La Bera Socialista apuesta por una línea clásica con acabados cuidados y una postura de manejo relajada. Pensada para quien hace recorridos urbanos todos los días."],
   ["bera-brf", "Bera BRF", "Deportiva", "4T",
     "Línea deportiva con actitud urbana.",
     "La Bera BRF combina una silueta deportiva con la practicidad de una moto de uso diario. Su conjunto favorece una conducción ágil sin renunciar a la comodidad."],
