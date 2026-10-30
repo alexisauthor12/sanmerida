@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { MOTOS } from "@/data/motos";
+import { MOTOS, MARCAS } from "@/data/motos";
 import PromoCarousel from "@/app/components/PromoCarousel";
 import ProcessCarousel from "@/app/components/ProcessCarousel";
 
@@ -211,7 +211,23 @@ export default function Home() {
   const metodosPagoBase = [...metodosPago, ...metodosPago, ...metodosPago];
 
   const [fraseActiva, setFraseActiva] = useState(0);
+  /** Marca seleccionada en el catalogo. "Todas" muestra el catalogo completo. */
+  const [marcaActiva, setMarcaActiva] = useState("Todas");
   const carruselRef = useRef<HTMLDivElement>(null);
+  /**
+   * Modelos que se muestran segun el filtro de marca.
+   *
+   * Con 45 modelos, un carrusel sin filtro es interminable: el usuario arrastra y no
+   * llega nunca al final. Con las marcas arriba, encuentra lo suyo en un toque.
+   */
+  const modelosVisibles =
+    marcaActiva === "Todas" ? MOTOS : MOTOS.filter((moto) => moto.marca === marcaActiva);
+
+  // Al cambiar de marca el carrusel vuelve al principio: si no, se queda desplazado en
+  // una posicion que ya no existe y el usuario ve un hueco.
+  useEffect(() => {
+    carruselRef.current?.scrollTo({ left: 0, behavior: "smooth" });
+  }, [marcaActiva]);
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const catalogSectionRef = useRef<HTMLDivElement>(null);
@@ -844,10 +860,16 @@ export default function Home() {
       </section>
 
       <section id="modelos" className="border-t border-white/10 bg-black px-6 py-16 sm:px-10 lg:px-16 lg:py-20">
-        <div className="mb-10 flex items-end justify-between">
-          <h2 className="text-3xl font-light tracking-[0.05em] text-white sm:text-4xl">
-            Nuevos modelos
-          </h2>
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 className="text-3xl font-light tracking-[0.05em] text-white sm:text-4xl">
+              Nuevos modelos
+            </h2>
+            <p className="mt-2 text-sm font-light text-white/55">
+              {modelosVisibles.length} {modelosVisibles.length === 1 ? "modelo" : "modelos"}
+              {marcaActiva !== "Todas" ? ` de ${marcaActiva}` : " en catálogo"}
+            </p>
+          </div>
 
           <div className="hidden items-center gap-3 md:flex">
             <button
@@ -869,11 +891,34 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Filtro por marca: con 45 modelos, un carrusel sin filtro no se recorre. */}
+        <div className="mb-8 flex flex-wrap gap-2">
+          {["Todas", ...MARCAS].map((marca) => {
+            const activa = marcaActiva === marca;
+
+            return (
+              <button
+                key={marca}
+                type="button"
+                onClick={() => setMarcaActiva(marca)}
+                aria-pressed={activa}
+                className={
+                  activa
+                    ? "rounded-full border border-white bg-white px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-black transition"
+                    : "rounded-full border border-white/25 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-white/70 transition hover:border-white/60 hover:text-white"
+                }
+              >
+                {marca}
+              </button>
+            );
+          })}
+        </div>
+
         <div
           ref={carruselRef}
           className="flex snap-x snap-mandatory gap-6 overflow-x-auto scroll-smooth pb-3 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
         >
-          {MOTOS.map((modelo) => (
+          {modelosVisibles.map((modelo, indice) => (
             <Link
               key={modelo.slug}
               href={`/modelos/${modelo.slug}`}
@@ -882,23 +927,24 @@ export default function Home() {
               data-model-card="true"
               className="group min-w-[84%] snap-start rounded-2xl border border-white/12 bg-zinc-950/60 p-5 backdrop-blur-[1px] transition duration-300 hover:-translate-y-1 hover:border-white/35 hover:bg-zinc-900/80 sm:min-w-[47%] lg:min-w-[31%] xl:min-w-[23.5%]"
             >
-              <div className="relative mb-5 flex h-52 items-center justify-center overflow-hidden rounded-xl border border-white/8 bg-gradient-to-b from-zinc-900 via-zinc-950 to-black">
+              <div className="relative mb-5 flex h-52 items-center justify-center overflow-hidden rounded-xl border border-white/8 bg-white">
                 <Image
                   src={modelo.imagen}
                   alt={modelo.nombre}
                   fill
                   sizes="(max-width: 640px) 100vw, 400px"
-                  className="object-contain object-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)] transition duration-500 group-hover:scale-[1.04]"
+                  className="object-contain object-center transition duration-500 group-hover:scale-[1.04]"
                   unoptimized
                 />
-                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(255,255,255,0.14),transparent_52%)]" />
-                <div className="absolute inset-x-6 bottom-4 h-px bg-white/15 transition-colors duration-300 group-hover:bg-white/35" />
-                <div className="pointer-events-none absolute inset-0 flex items-end justify-between p-4 opacity-0 transition duration-300 group-hover:opacity-100">
-                  <span className="rounded-full border border-white/50 bg-black/50 px-3 py-1 text-xs uppercase tracking-[0.16em] text-white/90">
-                    Ver ficha
+                {/* Distintivo: los tres primeros del catalogo son las novedades. */}
+                {indice < 3 ? (
+                  <span className="absolute left-3 top-3 rounded-full bg-emerald-500 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-black">
+                    Nuevo
                   </span>
-                  <span className="text-lg text-white/90">↗</span>
-                </div>
+                ) : null}
+                <span className="absolute right-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/90">
+                  {modelo.marca}
+                </span>
               </div>
 
               <h3 className="text-2xl font-light tracking-[0.03em] text-white">
@@ -907,6 +953,10 @@ export default function Home() {
               <p className="mt-3 text-lg font-light leading-8 tracking-[0.02em] text-white/75">
                 {modelo.descripcion}
               </p>
+              <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-emerald-300 transition group-hover:gap-2.5">
+                Ver ficha
+                <span aria-hidden="true">↗</span>
+              </span>
             </Link>
           ))}
         </div>

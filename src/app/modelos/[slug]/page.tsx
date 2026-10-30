@@ -39,7 +39,7 @@ export default async function ModeloDetallePage({ params }: Props) {
 
         <section className="grid gap-8 lg:grid-cols-[1.2fr_1fr]">
           <article className="rounded-3xl border border-white/12 bg-zinc-950/70 p-5 sm:p-6">
-            <div className="relative mb-6 flex h-[360px] items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-zinc-900 via-zinc-950 to-black sm:h-[430px]">
+            <div className="relative mb-6 flex h-[360px] items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white sm:h-[430px]">
               <Image
                 src={modelo.imagen}
                 alt={modelo.nombre}
@@ -51,7 +51,9 @@ export default async function ModeloDetallePage({ params }: Props) {
               />
             </div>
 
-            <p className="text-xs uppercase tracking-[0.2em] text-white/55">{modelo.categoria}</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-white/55">
+              {modelo.marca} · {modelo.categoria}
+            </p>
             <h1 className="mt-2 text-3xl font-light tracking-[0.03em] text-white sm:text-4xl">
               {modelo.nombre}
             </h1>
