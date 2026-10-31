@@ -67,8 +67,8 @@ const MODELOS = {
   51: ["toro-foxtr", "Toro Foxtr"],
   52: ["toro-tanktr", "Toro Tanktr"],
   53: ["toro-moka", "Toro Moka"],
-  55: ["et-cuda-hero", "ET Cuda Hero"],
-  56: ["et-cuda-m200", "ET Cuda M200"],
+  55: ["em-escuda-hero", "EM Escuda Hero"],
+  56: ["em-escuda-200", "EM Escuda 200"],
 };
 
 /** Agrupa los archivos por pagina. */

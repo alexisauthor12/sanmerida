@@ -162,12 +162,12 @@ MODELOS.push(
 );
 
 MODELOS.push(
-  ["et-cuda-hero", "ET Cuda Hero", "Trabajo", "4T",
+  ["em-escuda-hero", "EM Escuda Hero", "Street", "4T",
     "Enfoque utilitario y resistente.",
-    "La ET Cuda Hero está orientada al trabajo diario, con un planteamiento que prioriza la resistencia mecánica y el bajo coste de mantenimiento."],
-  ["et-cuda-m200", "ET Cuda M200", "Trabajo", "200cc 4T",
+    "La EM Escuda Hero está orientada al trabajo diario, con un planteamiento que prioriza la resistencia mecánica y el bajo coste de mantenimiento."],
+  ["em-escuda-200", "EM Escuda 200", "Street", "200cc 4T",
     "Cilindrada 200 para carga y trayectos largos.",
-    "La ET Cuda M200 sube a 200cc para quien necesita más músculo en el día a día, ya sea por carga o por recorridos largos."],
+    "La EM Escuda 200 sube a 200cc para quien necesita más músculo en el día a día, ya sea por carga o por recorridos largos."],
 );
 
 // FIN_TABLA
@@ -179,7 +179,7 @@ const escapar = (s) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 const marcaDe = (slug) => {
   const prefijo = slug.split("-")[0];
 
-  return { bera: "Bera", ek: "EK", md: "MD", ava: "AVA", toro: "Toro", et: "ET" }[prefijo] ?? prefijo;
+  return { bera: "Bera", ek: "EK", md: "MD", ava: "AVA", toro: "Toro", em: "EM" }[prefijo] ?? prefijo;
 };
 
 const entradas = MODELOS.map(([slug, nombre, categoria, motor, corta, larga], indice) => {
