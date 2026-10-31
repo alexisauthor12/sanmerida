@@ -10,8 +10,8 @@ const SLIDES = [
     highlight: "REALIDAD",
     description: "San Mérida de Jesús Zambrano. Seriedad y responsabilidad en cada entrega.",
     subtext: "@SANMERIDADEJESUSZAMBRANO",
-    image: "/catalogo/bera-socialista.webp",
-    imageAlt: "Moto San Mérida",
+    image: "/promos/slide-haciendo-suenos.webp",
+    imageAlt: "San Mérida de Jesús Zambrano",
   },
   {
     id: 2,
@@ -19,8 +19,8 @@ const SLIDES = [
     highlight: "RULETA",
     description: "NUESTRO SISTEMA DE RULETA GIRA TODOS LOS SÁBADOS. DE AHORA EN ADELANTE, 55$.",
     subtext: "NO TE QUEDES POR FUERA",
-    image: "/promos/ruleta.webp",
-    imageAlt: "Sistema de Ruleta San Mérida",
+    image: "/promos/slide-ruleta.webp",
+    imageAlt: "Ruleta de premios San Mérida",
   },
   {
     id: 3,
@@ -28,9 +28,8 @@ const SLIDES = [
     highlight: "SOLO 55$ QUINCENALES",
     description: "NO DEJES PASAR ESTA OPORTUNIDAD. SERIEDAD Y RESPONSABILIDAD.",
     subtext: "LLÉVATE UNA MOTO",
-    price: "55$ / quincenal",
-    image: "/catalogo/ek-owen.webp",
-    imageAlt: "Financiamiento Moto",
+    image: "/promos/slide-tu-moto.webp",
+    imageAlt: "EK Xpress - tu moto por 55$ quincenales",
   },
 ];
 
@@ -86,16 +85,6 @@ export default function PromoCarousel() {
                    <p className="mt-2 text-sm text-zinc-500 font-medium tracking-widest uppercase">
                      {slide.subtext}
                    </p>
-                )}
-
-                {slide.price && (
-                  <div className="mt-8 flex items-center gap-4">
-                    <div className="border border-white/20 bg-white/5 px-6 py-3 backdrop-blur-sm">
-                      <span className="text-xl font-light text-white tracking-widest">
-                        {slide.price}
-                      </span>
-                    </div>
-                  </div>
                 )}
               </div>
             ))}

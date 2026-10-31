@@ -55,6 +55,40 @@ test("no hay imágenes con espacios en el nombre", () => {
   );
 });
 
+test("todas las imágenes del carrusel de promociones existen en public/", () => {
+  // Este bloque ya se rompió dos veces (28/10/2026): `/tx-200.png` y `/Owen%20200S.png`
+  // quedaron apuntando a archivos borrados y el carrusel mostraba un hueco en la portada,
+  // que es lo primero que ve un cliente. La prueba es la misma idea que la del catálogo.
+  const carrusel = readFileSync(
+    join(RAIZ, "src", "app", "components", "PromoCarousel.tsx"),
+    "utf8",
+  );
+
+  const rutas = [...carrusel.matchAll(/image:\s*"([^"]+)"/g)].map((m) => m[1]);
+
+  assert.ok(rutas.length >= 3, `solo se encontraron ${rutas.length} imágenes en el carrusel`);
+
+  const faltan = [];
+  const pesadas = [];
+
+  for (const ruta of rutas) {
+    const archivo = join(RAIZ, "public", decodeURIComponent(ruta.replace(/^\//, "")));
+
+    if (!existsSync(archivo)) {
+      faltan.push(ruta);
+      continue;
+    }
+
+    // El carrusel es lo primero que carga la portada: un PNG de 1 MB ahí se nota.
+    const kb = Math.round(statSync(archivo).size / 1024);
+
+    if (kb > 300) pesadas.push(`${ruta} (${kb} KB)`);
+  }
+
+  assert.deepEqual(faltan, [], `Estas imágenes del carrusel no existen en public/:\n  ${faltan.join("\n  ")}`);
+  assert.deepEqual(pesadas, [], `Estas imágenes del carrusel pesan demasiado:\n  ${pesadas.join("\n  ")}`);
+});
+
 test("ninguna imagen de public/ es un duplicado exacto de otra", () => {
   // Se compara el tamaño: dos archivos del mismo peso son sospechosos y se revisan a
   // mano. No se borra nada automaticamente: la prueba solo avisa.
